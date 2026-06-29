@@ -218,5 +218,5 @@ type geminiBackend struct {
 }
 
 func (b *geminiBackend) Execute(ctx context.Context, prompt string, opts ExecOptions) (*Session, error) {
-	return nil, fmt.Errorf("gemini adapter not yet implemented")
+	return nil, fmt.Errorf("gemini adapter deferred: gemini CLI is not ACP-capable (see .omo/evidence/task-8-aiclibridge-mvp.txt); v1 ships 4 CLIs (claude, codex, opencode, openclaw)")
 }

@@ -105,3 +105,33 @@ func TestFilterCustomArgs(t *testing.T) {
 		t.Errorf("filterCustomArgs mismatch:\n got  %#v\n want %#v", got, want)
 	}
 }
+
+// TestDeferredGemini verifies the geminiBackend stub returns a clear
+// deferred error citing the evidence file. Path 2B of todo 8: gemini
+// is deferred because no `gemini` binary on host + no ACP launch code
+// in AionUi + no gemini adapter in multica = no ACP evidence (Metis
+// rule: do not assume ACP without evidence). The stub is kept in the
+// factory so New("gemini", ...) still returns a non-nil Backend —
+// only Execute() errors with the deferral message.
+func TestDeferredGemini(t *testing.T) {
+	b, err := New("gemini", Config{})
+	if err != nil {
+		t.Fatalf("New(gemini): unexpected error: %v", err)
+	}
+	if b == nil {
+		t.Fatalf("New(gemini): returned nil Backend")
+	}
+	sess, execErr := b.Execute(t.Context(), "hello", ExecOptions{})
+	if sess != nil {
+		t.Errorf("Execute: expected nil Session, got %+v", sess)
+	}
+	if execErr == nil {
+		t.Fatal("Execute: expected deferred error, got nil")
+	}
+	msg := execErr.Error()
+	for _, want := range []string{"deferred", "ACP-capable", "task-8-aiclibridge-mvp.txt", "4 CLIs"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("Execute error %q: missing %q", msg, want)
+		}
+	}
+}
