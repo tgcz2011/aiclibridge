@@ -1,0 +1,17 @@
+# Reference repos — present locally, NOT part of this project
+multica/
+AionUi/
+
+# Planning artifacts
+.omo/
+
+# Build artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+/aiclibridge
+dist/
+
+# Env
+.env
