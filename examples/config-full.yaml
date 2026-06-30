@@ -1,0 +1,127 @@
+# aiclibridge.yaml — full configuration example.
+#
+# Every field is shown. Each agent uses a different combination of optional
+# fields to illustrate the available knobs. Field semantics live in
+# docs/configuration.md; env overrides (AICLIBRIDGE_*) layer on top and
+# always win over this file.
+#
+# Field reference:
+#   listen             : HTTP listen address (host:port). Empty fails validation.
+#   api_key            : static API key. Empty = auth disabled.
+#   data_dir           : data dir; SQLite file aiclibridge.db lives here.
+#   log_level          : debug | info | warn | error.
+#   default_timeout_ms : reserved; 0 = no global timeout (per-run timeout_ms wins).
+#   agents.<cli>:
+#     enabled          : expose this CLI? false hides it from /v1/agents and rejects runs.
+#     executable_path  : CLI binary path. Empty = PATH lookup.
+#     extra_args       : daemon-level default CLI args (claude/codex only).
+#     custom_args      : user CLI args appended last (request custom_args append after).
+#     env              : extra subprocess env vars, merged on top of daemon env.
+#     mcp_config       : inline YAML MCP server config, re-encoded to JSON.
+#     thinking_level   : reasoning effort (per-CLI vocab; empty = model default).
+#     openclaw_mode    : local | gateway (openclaw only; empty = local).
+
+listen: 127.0.0.1:8787
+api_key: sk-aiclibridge-xxx
+data_dir: ./data
+log_level: info
+default_timeout_ms: 0
+
+agents:
+  # claude — exercises every field: path, extra_args, custom_args, env,
+  # inline mcp_config, and thinking_level. Claude accepts thinking_level
+  # in {low, medium, high, xhigh, max} and projects MCP via --mcp-config.
+  claude:
+    enabled: true
+    executable_path: ""              # empty = PATH lookup of `claude`
+    extra_args:
+      - "--no-cache"                # daemon-level default args
+    custom_args:
+      - "--dangerously-skip-permissions=false"
+    env:
+      ANTHROPIC_LOG: "debug"
+      CLAUDE_CODE_MAX_OUTPUT_TOKENS: "8192"
+    thinking_level: high            # low | medium | high | xhigh | max
+    mcp_config:
+      mcpServers:
+        fs:
+          command: npx
+          args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+        git:
+          command: uvx
+          args: ["mcp-server-git", "--repository", "/tmp/repo"]
+
+  # codex — JSON-RPC app-server backend. MCP is projected via a managed
+  # [mcp_servers.*] block in $CODEX_HOME/config.toml (not --mcp-config).
+  # thinking_level maps to model_reasoning_effort in {none, minimal, low,
+  # medium, high, xhigh}.
+  codex:
+    enabled: true
+    executable_path: ""              # empty = PATH lookup of `codex`
+    custom_args:
+      - "-c"
+      - "model_reasoning_effort=medium"
+    env:
+      CODEX_HOME: "/tmp/codex"
+    mcp_config:
+      mcpServers:
+        fs:
+          command: npx
+          args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+
+  # opencode — NDJSON backend. MCP is injected via the OPENCODE_CONFIG_CONTENT
+  # env var (opencode has no --mcp-config flag). thinking_level is the
+  # model variant name passed as --variant.
+  opencode:
+    enabled: true
+    executable_path: ""              # empty = PATH lookup of `opencode`
+    custom_args:
+      - "--no-cache"
+    env:
+      OPENCODE_LOG: "debug"
+    thinking_level: ""              # empty = use model default variant
+    mcp_config:
+      mcpServers:
+        fs:
+          command: npx
+          args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+
+  # openclaw — NDJSON + local in-process backend. openclaw_mode selects
+  # local (embedded, default) vs gateway (drops --local, dials a gateway).
+  # openclaw does NOT honour mcp_config / thinking_level; model is bound
+  # at `openclaw agents add/update --model` time.
+  openclaw:
+    enabled: true
+    executable_path: ""              # empty = PATH lookup of `openclaw`
+    openclaw_mode: local            # local | gateway
+    env:
+      OPENCLAW_LOG: "info"
+
+  # qwen — stream-json backend (Claude SDK schema). thinking_level is
+  # ignored by qwen; MCP is projected via --mcp-config (qwen supports it
+  # natively, unlike opencode).
+  qwen:
+    enabled: true
+    executable_path: ""              # empty = PATH lookup of `qwen`
+    custom_args:
+      - "--no-yolo-warning"
+    thinking_level: ""              # ignored by qwen backend
+    mcp_config:
+      mcpServers:
+        fs:
+          command: npx
+          args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+
+  # gemini — stream-json backend assumed to share opencode/qwen lineage.
+  # EXPERIMENTAL: disabled by default. MCP via --mcp-config; thinking_level
+  # is ignored.
+  gemini:
+    enabled: false                  # experimental, off by default
+    executable_path: ""
+    custom_args: []
+    env: {}
+    mcp_config:
+      mcpServers:
+        fs:
+          command: npx
+          args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
