@@ -5,7 +5,7 @@ AICLIBridge 是一个统一 AI CLI 桥:用一个 HTTP API 同时驱动 Claude Co
 ![CI](https://github.com/tgcz2011/aiclibridge/actions/workflows/ci.yml/badge.svg)
 ![Go](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue)
-![Release](https://img.shields.io/badge/release-v0.1.0-blue)
+![Release](https://img.shields.io/badge/release-v0.2.0-blue)
 
 ## 核心特性
 
@@ -52,14 +52,43 @@ curl -s -H "Authorization: Bearer sk-aiclibridge-xxx" http://127.0.0.1:8787/v1/m
 
 ## 支持的 CLI 矩阵
 
-| CLI | 上游协议 | 接入方式 | 状态 |
-|---|---|---|---|
-| claude | stream-json (`--output-format stream-json`) | PATH / `executable_path` | stable |
-| codex | JSON-RPC over stdin/stdout | PATH / `executable_path` | stable |
-| opencode | NDJSON (`--output-format stream-json`) | PATH / `executable_path` | stable |
-| openclaw | NDJSON + 本地 in-process(`local`/`gateway` 模式) | PATH / `executable_path` | stable |
-| qwen | stream-json(Claude SDK schema) | PATH / `executable_path` | stable |
-| gemini | stream-json(与 opencode 同源) | PATH / `executable_path` | experimental |
+v0.2 支持 19 个 CLI，分三层：
+
+### Stable（v0.1，已验证）
+
+| CLI | 上游协议 | 接入方式 |
+|---|---|---|
+| claude | stream-json (`--output-format stream-json`) | PATH / `executable_path` |
+| codex | JSON-RPC over stdin/stdout | PATH / `executable_path` |
+| opencode | NDJSON (`--output-format stream-json`) | PATH / `executable_path` |
+| openclaw | NDJSON + 本地 in-process(`local`/`gateway` 模式) | PATH / `executable_path` |
+| qwen | stream-json(Claude SDK schema) | PATH / `executable_path` |
+
+### Experimental（v0.2，基于 AionUi ACP 协议调研）
+
+| CLI | 协议 | 说明 |
+|---|---|---|
+| gemini | stream-json(与 opencode 同源) | 本机未装，假设性适配 |
+| codebuddy | stream-json(Claude SDK schema) | 本机已装 v2.113.0，schema 假设与 qwen 一致 |
+| copilot | ACP JSON-RPC | 本机已装 v1.0.65，MCP 用 `--additional-mcp-config` |
+| goose | ACP JSON-RPC | `goose acp` 子命令入口 |
+| cursor | ACP JSON-RPC | `cursor-agent` 二进制 |
+| kimi | ACP JSON-RPC | Moonshot Kimi CLI |
+| kiro | ACP JSON-RPC | AWS Kiro |
+| qoder | ACP JSON-RPC | Qoder CLI |
+| hermes | ACP JSON-RPC | NousResearch hermes-agent |
+| auggie | ACP JSON-RPC | Auggie CLI |
+
+### Stub（v0.2，协议未知）
+
+| CLI | 说明 |
+|---|---|
+| droid | 推测 Factory.ai droid，未在 AionUi TS 代码中发现 |
+| snow | 完全无信息，可能仅闭源 aioncore |
+| vibe | 完全无信息，可能仅闭源 aioncore |
+| aion | 推测 AionUi 自家后端 |
+
+Stub 适配器返回 `ErrNotImplemented`，在 `/v1/agents` 标记为 `available: false`。
 
 ## 架构
 
@@ -75,7 +104,9 @@ curl -s -H "Authorization: Bearer sk-aiclibridge-xxx" http://127.0.0.1:8787/v1/m
 │ facade: 路由 CLI/provider/model → 选 adapter         │  ← 编排 + 持久化
 │         每 run 一 goroutine,事件流聚合到 channel    │
 ├────────────────────────────────────────────────────┤
-│ adapter: claude codex opencode openclaw qwen gemini │  ← 协议翻译
+│ adapter: claude codex opencode openclaw qwen gemini  │  ← 协议翻译
+│          codebuddy copilot goose cursor kimi kiro   │
+│          qoder hermes auggie droid snow vibe aion    │
 └────────────┬───────────────────────────────────────┘
              │ exec 子进程 (stdin/stdout 流)
    ┌─────────▼─────────┐

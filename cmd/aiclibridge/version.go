@@ -14,10 +14,14 @@ import (
 
 // Version is the canonical version string for the aiclibridge binary.
 // Bumped per release; printed by `aiclibridge version` and surfaced by
-// the `--version` / `-v` top-level flag. v0.1.0 is the first
-// releaseable cut — the CLI surface (serve/run/agents/models/cancel/
-// get/version) is feature-complete for the one-shot invocation mode.
-const Version = "0.1.0"
+// the `--version` / `-v` top-level flag.
+//   - v0.1.0: first releaseable cut — 6 CLIs (claude/codex/opencode/
+//     openclaw/qwen/gemini), CLI subcommands, OpenAI/Anthropic/native
+//     API surfaces, full docs.
+//   - v0.2.0: extends to 19 CLIs from AionUi's ACP catalogue — adds
+//     codebuddy (stream-json), copilot/goose/cursor/kimi/kiro/qoder/
+//     hermes/auggie (ACP JSON-RPC), and droid/snow/vibe/aion (stubs).
+const Version = "0.2.0"
 
 // Build and Commit are populated by -ldflags at link time
 // (`-X main.Build=... -X main.Commit=...`). They stay empty for local
