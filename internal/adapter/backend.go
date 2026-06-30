@@ -2,10 +2,10 @@
 //
 // It hosts the per-CLI adapters that translate aiclibridge's internal
 // request model into the wire protocol of each supported coding CLI
-// (Claude Code, Codex, OpenCode, OpenClaw). Each backend lives in its
-// own file (claude.go, codex.go, opencode.go, openclaw.go) and shares
-// process-supervision helpers from helpers.go. A gemini stub remains
-// gated behind the v1 four-CLI surface.
+// (Claude Code, Codex, OpenCode, OpenClaw, Qwen Code, Gemini CLI). Each
+// backend lives in its own file (claude.go, codex.go, opencode.go,
+// openclaw.go, qwen.go, gemini.go) and shares process-supervision
+// helpers from helpers.go.
 package adapter
 
 import (
@@ -148,7 +148,7 @@ type Config struct {
 
 // New creates a Backend for the given agent type.
 //
-// Supported types: "claude", "codex", "opencode", "openclaw", "gemini".
+// Supported types: "claude", "codex", "opencode", "openclaw", "qwen", "gemini".
 //
 // Each adapter's Execute method is implemented in a later milestone; for now
 // calling Execute on a returned Backend returns a "not yet implemented"
@@ -168,10 +168,12 @@ func New(agentType string, cfg Config) (Backend, error) {
 		return &opencodeBackend{cfg: cfg}, nil
 	case "openclaw":
 		return &openclawBackend{cfg: cfg}, nil
+	case "qwen":
+		return &qwenBackend{cfg: cfg}, nil
 	case "gemini":
 		return &geminiBackend{cfg: cfg}, nil
 	default:
-		return nil, fmt.Errorf("unknown agent type %q (not supported in v1: claude, codex, opencode, openclaw, gemini)", agentType)
+		return nil, fmt.Errorf("unknown agent type %q (not supported in v1: claude, codex, opencode, openclaw, qwen, gemini)", agentType)
 	}
 }
 
@@ -205,6 +207,4 @@ type geminiBackend struct {
 	cfg Config
 }
 
-func (b *geminiBackend) Execute(ctx context.Context, prompt string, opts ExecOptions) (*Session, error) {
-	return nil, fmt.Errorf("gemini adapter deferred: gemini CLI is not ACP-capable (see .omo/evidence/task-8-aiclibridge-mvp.txt); v1 ships 4 CLIs (claude, codex, opencode, openclaw)")
-}
+// geminiBackend.Execute lives in internal/adapter/gemini.go.
