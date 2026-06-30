@@ -185,9 +185,7 @@ type claudeBackend struct {
 	cfg Config
 }
 
-func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOptions) (*Session, error) {
-	return nil, fmt.Errorf("claude adapter not yet implemented")
-}
+// claudeBackend.Execute lives in internal/adapter/claude.go.
 
 type codexBackend struct {
 	cfg Config
@@ -201,17 +199,7 @@ type opencodeBackend struct {
 	cfg Config
 }
 
-func (b *opencodeBackend) Execute(ctx context.Context, prompt string, opts ExecOptions) (*Session, error) {
-	return nil, fmt.Errorf("opencode adapter not yet implemented")
-}
-
-type openclawBackend struct {
-	cfg Config
-}
-
-func (b *openclawBackend) Execute(ctx context.Context, prompt string, opts ExecOptions) (*Session, error) {
-	return nil, fmt.Errorf("openclaw adapter not yet implemented")
-}
+// openclawBackend lives in internal/adapter/openclaw.go.
 
 type geminiBackend struct {
 	cfg Config
