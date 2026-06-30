@@ -12,10 +12,23 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// KnownAgents lists the agent names aiclibridge supports in v1. The
-// order is stable so Defaults and env-override loops visit agents
-// deterministically.
-var KnownAgents = []string{"claude", "codex", "opencode", "openclaw", "qwen", "gemini"}
+// KnownAgents lists the agent names aiclibridge supports. The order is
+// stable so Defaults and env-override loops visit agents deterministically.
+// v0.2 adds 13 more CLIs surfaced from AionUi's ACP backend catalogue:
+// codebuddy (stream-json, Claude SDK schema), copilot/goose/cursor/kimi/
+// kiro/qoder/hermes/auggie (ACP JSON-RPC via acp.go), and droid/snow/vibe/
+// aion (stub — protocol unknown, awaiting upstream docs).
+var KnownAgents = []string{
+	// v0.1 stream-json / NDJSON / JSON-RPC app-server family
+	"claude", "codex", "opencode", "openclaw", "qwen", "gemini",
+	// v0.2 stream-json (Claude SDK schema, same flags as qwen)
+	"codebuddy",
+	// v0.2 ACP JSON-RPC family (generic adapter in acp.go)
+	"copilot", "goose", "cursor", "kimi", "kiro", "qoder", "hermes", "auggie",
+	// v0.2 stubs (protocol not yet documented; registered but Execute
+	// returns ErrNotImplemented so the catalog lists them honestly)
+	"droid", "snow", "vibe", "aion",
+}
 
 // knownAgent is a set for O(1) membership checks during Validate.
 var knownAgent = func() map[string]struct{} {

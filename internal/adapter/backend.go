@@ -148,12 +148,15 @@ type Config struct {
 
 // New creates a Backend for the given agent type.
 //
-// Supported types: "claude", "codex", "opencode", "openclaw", "qwen", "gemini".
+// Supported types (v0.2):
+//   - stream-json / NDJSON / app-server: claude, codex, opencode, openclaw, qwen, gemini
+//   - stream-json (Claude SDK schema, same flags as qwen): codebuddy
+//   - ACP JSON-RPC (generic adapter in acp.go): copilot, goose, cursor, kimi, kiro, qoder, hermes, auggie
+//   - stubs (ErrNotImplemented): droid, snow, vibe, aion
 //
-// Each adapter's Execute method is implemented in a later milestone; for now
-// calling Execute on a returned Backend returns a "not yet implemented"
-// error so the rest of the system can compile and test against the
-// adapter contract without depending on real CLI integrations.
+// Each adapter's Execute method is implemented in its own file; stub
+// adapters return ErrNotImplemented so the catalog can list them
+// honestly as known-but-unavailable.
 func New(agentType string, cfg Config) (Backend, error) {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
@@ -172,9 +175,33 @@ func New(agentType string, cfg Config) (Backend, error) {
 		return &qwenBackend{cfg: cfg}, nil
 	case "gemini":
 		return &geminiBackend{cfg: cfg}, nil
+	case "codebuddy":
+		return &codebuddyBackend{cfg: cfg}, nil
+	case "copilot", "goose", "cursor", "kimi", "kiro", "qoder", "hermes", "auggie":
+		return newAcpBackend(agentType, cfg)
+	case "droid", "snow", "vibe", "aion":
+		return &stubBackend{name: agentType}, nil
 	default:
-		return nil, fmt.Errorf("unknown agent type %q (not supported in v1: claude, codex, opencode, openclaw, qwen, gemini)", agentType)
+		return nil, fmt.Errorf("unknown agent type %q (supported: claude, codex, opencode, openclaw, qwen, gemini, codebuddy, copilot, goose, cursor, kimi, kiro, qoder, hermes, auggie, droid, snow, vibe, aion)", agentType)
 	}
+}
+
+// ErrNotImplemented is returned by stub adapters whose upstream CLI
+// protocol has not yet been documented. The bridge catalog still lists
+// these agents (as available:false) so clients can see what the bridge
+// would route to once the protocol is known.
+var ErrNotImplemented = fmt.Errorf("adapter not implemented for this CLI (protocol unknown; awaiting upstream documentation)")
+
+// stubBackend satisfies Backend for CLIs whose wire protocol is not yet
+// known (droid, snow, vibe, aion). Execute always returns ErrNotImplemented
+// so a run routed to one of these fails fast with an honest error rather
+// than silently hanging or spawning a process with guessed args.
+type stubBackend struct {
+	name string
+}
+
+func (s *stubBackend) Execute(_ context.Context, _ string, _ ExecOptions) (*Session, error) {
+	return nil, fmt.Errorf("%w: %s", ErrNotImplemented, s.name)
 }
 
 // ── Stub adapters ──

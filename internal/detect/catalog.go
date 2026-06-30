@@ -2,12 +2,27 @@ package detect
 
 import "context"
 
-// supportedCLIs is the v1 set of CLIs the bridge can serve. Order matters:
+// supportedCLIs is the set of CLIs the bridge can serve. Order matters:
 // DefaultCatalog and Discover both iterate this slice in this order so the
 // HTTP catalog endpoint emits a stable, testable listing. Adding a CLI here
 // is the single source of truth for "what does the bridge know about" —
 // detect.go picks it up automatically.
-var supportedCLIs = []string{"claude", "codex", "opencode", "openclaw", "qwen", "gemini"}
+//
+// v0.2 extends the v0.1 six-CLI set with thirteen more surfaced from
+// AionUi's ACP backend catalogue. The stub tier (droid/snow/vibe/aion)
+// is listed so /v1/agents reports them as available:false rather than
+// silently omitting them — clients can see what the bridge *would*
+// route to once the upstream protocol is documented.
+var supportedCLIs = []string{
+	// v0.1
+	"claude", "codex", "opencode", "openclaw", "qwen", "gemini",
+	// v0.2 stream-json (Claude SDK schema)
+	"codebuddy",
+	// v0.2 ACP JSON-RPC family
+	"copilot", "goose", "cursor", "kimi", "kiro", "qoder", "hermes", "auggie",
+	// v0.2 stubs
+	"droid", "snow", "vibe", "aion",
+}
 
 // hardcodedCatalog is the v1 Discoverer. It returns the static provider/model
 // tables shipped in source, the same ones surfaced by DefaultCatalog for
@@ -92,6 +107,88 @@ var hardcodedCatalog = map[string][]ProviderInfo{
 			},
 		},
 	},
+	// ── v0.2 additions ──
+	"codebuddy": {
+		{
+			Name: "tencent",
+			Models: []ModelInfo{
+				{Name: "codebuddy-x1", DisplayName: "CodeBuddy X1"},
+				{Name: "hunyuan-code", DisplayName: "Hunyuan Code"},
+			},
+		},
+	},
+	"copilot": {
+		{
+			Name: "github",
+			Models: []ModelInfo{
+				{Name: "gpt-5", DisplayName: "GPT-5"},
+				{Name: "claude-sonnet-4.5", DisplayName: "Claude Sonnet 4.5"},
+				{Name: "gemini-2.5-pro", DisplayName: "Gemini 2.5 Pro"},
+			},
+		},
+	},
+	"goose": {
+		{
+			Name: "block",
+			Models: []ModelInfo{
+				{Name: "goose-1", DisplayName: "Goose 1"},
+			},
+		},
+	},
+	"cursor": {
+		{
+			Name: "cursor",
+			Models: []ModelInfo{
+				{Name: "cursor-default", DisplayName: "Cursor Default"},
+			},
+		},
+	},
+	"kimi": {
+		{
+			Name: "moonshot",
+			Models: []ModelInfo{
+				{Name: "kimi-k2", DisplayName: "Kimi K2"},
+			},
+		},
+	},
+	"kiro": {
+		{
+			Name: "aws",
+			Models: []ModelInfo{
+				{Name: "kiro-default", DisplayName: "Kiro Default"},
+			},
+		},
+	},
+	"qoder": {
+		{
+			Name: "qoder",
+			Models: []ModelInfo{
+				{Name: "qoder-default", DisplayName: "Qoder Default"},
+			},
+		},
+	},
+	"hermes": {
+		{
+			Name: "nous",
+			Models: []ModelInfo{
+				{Name: "hermes-4", DisplayName: "Hermes 4"},
+			},
+		},
+	},
+	"auggie": {
+		{
+			Name: "auggie",
+			Models: []ModelInfo{
+				{Name: "auggie-default", DisplayName: "Auggie Default"},
+			},
+		},
+	},
+	// Stubs — no known provider/model mapping; listed so /v1/agents
+	// honestly reports them as known-but-unavailable.
+	"droid":  {},
+	"snow":   {},
+	"vibe":   {},
+	"aion":   {},
 }
 
 // hardcodedCatalog implements Discoverer. DiscoverModels returns a defensive

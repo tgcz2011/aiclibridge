@@ -227,12 +227,11 @@ func TestDefaultCatalog(t *testing.T) {
 	t.Parallel()
 
 	catalog := DefaultCatalog()
-	if len(catalog) != 6 {
-		t.Fatalf("DefaultCatalog: got %d CLIs, want 6", len(catalog))
+	if len(catalog) != len(supportedCLIs) {
+		t.Fatalf("DefaultCatalog: got %d CLIs, want %d", len(catalog), len(supportedCLIs))
 	}
 
-	wantNames := []string{"claude", "codex", "opencode", "openclaw", "qwen", "gemini"}
-	for i, want := range wantNames {
+	for i, want := range supportedCLIs {
 		if catalog[i].Name != want {
 			t.Errorf("DefaultCatalog[%d].Name = %q, want %q", i, catalog[i].Name, want)
 		}
@@ -246,8 +245,22 @@ func TestDefaultCatalog(t *testing.T) {
 		if catalog[i].Path != "" {
 			t.Errorf("DefaultCatalog[%d] (%s): Path = %q, want empty", i, catalog[i].Name, catalog[i].Path)
 		}
-		if len(catalog[i].Providers) == 0 {
-			t.Errorf("DefaultCatalog[%d] (%s): Providers empty, want hardcoded catalog", i, catalog[i].Name)
+	}
+
+	// Stubs (droid/snow/vibe/aion) intentionally have no provider/model
+	// mapping — they are listed so /v1/agents honestly reports them as
+	// known-but-unavailable. Every other entry must have a non-empty
+	// Providers slice.
+	stubs := map[string]bool{"droid": true, "snow": true, "vibe": true, "aion": true}
+	for i, entry := range catalog {
+		if stubs[entry.Name] {
+			if len(entry.Providers) != 0 {
+				t.Errorf("DefaultCatalog[%d] (%s): stub has %d providers, want 0", i, entry.Name, len(entry.Providers))
+			}
+			continue
+		}
+		if len(entry.Providers) == 0 {
+			t.Errorf("DefaultCatalog[%d] (%s): Providers empty, want hardcoded catalog", i, entry.Name)
 		}
 	}
 
@@ -364,13 +377,15 @@ func TestDiscoverNeverErrorsForAnyMissingCLIs(t *testing.T) {
 		t.Fatalf("discoverWithCLIs: got %d results, want %d", len(results), len(mixed))
 	}
 	// Order is preserved — supportedCLIs first, then the injected name.
+	// Stubs (droid/snow/vibe/aion) have no provider/model mapping.
+	stubNames := map[string]bool{"droid": true, "snow": true, "vibe": true, "aion": true}
 	for i, want := range mixed {
 		if results[i].Name != want {
 			t.Errorf("results[%d].Name = %q, want %q", i, results[i].Name, want)
 		}
 		// Providers must always be populated from the catalog, even
 		// when the binary is missing — that's the preview contract.
-		if want != "definitely-not-installed-cli-12345" && len(results[i].Providers) == 0 {
+		if want != "definitely-not-installed-cli-12345" && !stubNames[want] && len(results[i].Providers) == 0 {
 			t.Errorf("results[%d] (%s): Providers empty, want hardcoded catalog", i, want)
 		}
 	}
@@ -401,10 +416,16 @@ func TestDiscoverSmoke(t *testing.T) {
 		if results[i].Name != want {
 			t.Errorf("Discover[%d].Name = %q, want %q", i, results[i].Name, want)
 		}
-		// The hardcoded catalog is always populated, regardless of
-		// whether the binary is installed.
-		if len(results[i].Providers) == 0 {
-			t.Errorf("Discover[%d] (%s): Providers empty, want hardcoded catalog", i, results[i].Name)
+	}
+	// Stubs (droid/snow/vibe/aion) have no provider/model mapping; every
+	// other entry must have a populated Providers slice.
+	stubNames := map[string]bool{"droid": true, "snow": true, "vibe": true, "aion": true}
+	for i, entry := range results {
+		if stubNames[entry.Name] {
+			continue
+		}
+		if len(entry.Providers) == 0 {
+			t.Errorf("Discover[%d] (%s): Providers empty, want hardcoded catalog", i, entry.Name)
 		}
 	}
 }

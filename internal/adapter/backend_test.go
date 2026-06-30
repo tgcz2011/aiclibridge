@@ -55,14 +55,17 @@ func TestMessageRoundTrip(t *testing.T) {
 	}
 }
 
-// TestNewFactory verifies the v1 factory contract: the five supported
-// agent types return a non-nil Backend (the stub for now), and unknown
-// types return an error whose message tells the caller which types v1
-// does support. The "not supported in v1" wording is the user-facing
-// signal that the agent type may be added later — we don't want
-// callers to mis-parse a hard "unknown" as a typo they can fix.
+// TestNewFactory verifies the factory contract: every supported agent
+// type returns a non-nil Backend, and an unknown type returns an error
+// whose message lists what the bridge does support.
 func TestNewFactory(t *testing.T) {
-	supported := []string{"claude", "codex", "opencode", "openclaw", "gemini"}
+	supported := []string{
+		// v0.1
+		"claude", "codex", "opencode", "openclaw", "qwen", "gemini",
+		// v0.2
+		"codebuddy", "copilot", "goose", "cursor", "kimi", "kiro",
+		"qoder", "hermes", "auggie", "droid", "snow", "vibe", "aion",
+	}
 	for _, name := range supported {
 		t.Run("supported/"+name, func(t *testing.T) {
 			b, err := New(name, Config{})
@@ -75,16 +78,16 @@ func TestNewFactory(t *testing.T) {
 		})
 	}
 
-	t.Run("unsupported/copilot", func(t *testing.T) {
-		b, err := New("copilot", Config{})
+	t.Run("unsupported/definitely-unknown", func(t *testing.T) {
+		b, err := New("definitely-not-a-real-cli", Config{})
 		if err == nil {
-			t.Fatalf("New(copilot): expected error, got nil")
+			t.Fatalf("New(unknown): expected error, got nil")
 		}
 		if b != nil {
-			t.Errorf("New(copilot): expected nil Backend on error, got %T", b)
+			t.Errorf("New(unknown): expected nil Backend on error, got %T", b)
 		}
-		if !strings.Contains(err.Error(), "not supported in v1") {
-			t.Errorf("New(copilot): error should mention \"not supported in v1\", got %q", err.Error())
+		if !strings.Contains(err.Error(), "unknown agent type") {
+			t.Errorf("New(unknown): error should mention \"unknown agent type\", got %q", err.Error())
 		}
 	})
 }
