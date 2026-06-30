@@ -1,0 +1,144 @@
+name: release
+
+# Triggers when a v* tag is pushed. Builds cross-platform binaries
+# (no CGO — modernc.org/sqlite is pure Go) and attaches them to a
+# GitHub Release. The release is created if it doesn't already exist.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: setup-go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: true
+
+      - name: build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          set -e
+          bin="aiclibridge-${{ matrix.goos }}-${{ matrix.goarch }}"
+          go build -trimpath -ldflags "-s -w -X github.com/tgcz2011/aiclibridge/cmd/aiclibridge.Commit=${GITHUB_SHA::7} -X github.com/tgcz2011/aiclibridge/cmd/aiclibridge.Build=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o "$bin" ./cmd/aiclibridge
+          archive="${bin}.tar.gz"
+          tar -czf "$archive" "$bin"
+          shasum -a 256 "$archive" > "${archive}.sha256"
+          echo "ASSET=${archive}" >> "$GITHUB_ENV"
+          echo "ASSET_SHA256=${archive}.sha256" >> "$GITHUB_ENV"
+
+      - name: upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aiclibridge-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            aiclibridge-*.tar.gz
+            aiclibridge-*.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          pattern: aiclibridge-*
+          merge-multiple: true
+
+      - name: list downloaded artifacts
+        run: ls -la release-assets/
+
+      - name: create release with assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            release-assets/aiclibridge-*.tar.gz
+            release-assets/aiclibridge-*.tar.gz.sha256
+          body: |
+            ## AICLIBridge ${{ github.ref_name }}
+
+            统一 AI CLI 桥：用一个 HTTP API 同时驱动 claude / codex / opencode / openclaw / qwen / gemini 六个 AI coding CLI，对外暴露 OpenAI / Anthropic 兼容接口与原生流式接口。
+
+            ### 二进制安装
+
+            下载对应平台的 `aiclibridge-{os}-{arch}.tar.gz`，解压后放到 `PATH` 即可：
+
+            ```sh
+            # macOS (Apple Silicon)
+            curl -L -o aiclibridge.tar.gz https://github.com/tgcz2011/aiclibridge/releases/download/${{ github.ref_name }}/aiclibridge-darwin-arm64.tar.gz
+            tar -xzf aiclibridge.tar.gz
+            sudo mv aiclibridge /usr/local/bin/
+            aiclibridge version
+
+            # Linux (x86_64)
+            curl -L -o aiclibridge.tar.gz https://github.com/tgcz2011/aiclibridge/releases/download/${{ github.ref_name }}/aiclibridge-linux-amd64.tar.gz
+            tar -xzf aiclibridge.tar.gz
+            sudo mv aiclibridge /usr/local/bin/
+            aiclibridge version
+            ```
+
+            校验完整性（可选）：
+
+            ```sh
+            shasum -a 256 aiclibridge-*.tar.gz
+            # 与同名 .sha256 文件比对
+            ```
+
+            ### 快速接入
+
+            见 [快速开始](https://github.com/tgcz2011/aiclibridge/blob/main/docs/quickstart.md)。
+
+            ### 支持的 CLI
+
+            | CLI | 状态 |
+            |---|---|
+            | claude | stable |
+            | codex | stable |
+            | opencode | stable |
+            | openclaw | stable |
+            | qwen | stable |
+            | gemini | experimental |
+
+            ---
+            完整变更见自动生成的 Release notes。
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
