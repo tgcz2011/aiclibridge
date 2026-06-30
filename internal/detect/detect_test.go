@@ -227,11 +227,11 @@ func TestDefaultCatalog(t *testing.T) {
 	t.Parallel()
 
 	catalog := DefaultCatalog()
-	if len(catalog) != 4 {
-		t.Fatalf("DefaultCatalog: got %d CLIs, want 4", len(catalog))
+	if len(catalog) != 6 {
+		t.Fatalf("DefaultCatalog: got %d CLIs, want 6", len(catalog))
 	}
 
-	wantNames := []string{"claude", "codex", "opencode", "openclaw"}
+	wantNames := []string{"claude", "codex", "opencode", "openclaw", "qwen", "gemini"}
 	for i, want := range wantNames {
 		if catalog[i].Name != want {
 			t.Errorf("DefaultCatalog[%d].Name = %q, want %q", i, catalog[i].Name, want)

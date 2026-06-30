@@ -116,7 +116,7 @@ agents:
 		t.Errorf("openclaw.ThinkingLevel: got %q, want medium", oc.ThinkingLevel)
 	}
 	// Agents omitted from the file must be backfilled as enabled so
-	// downstream lookups always find the four known agents.
+	// downstream lookups always find every known agent.
 	codex := c.Agents["codex"]
 	if !codex.Enabled {
 		t.Errorf("codex (omitted in file) should be backfilled as enabled=true")
@@ -319,7 +319,7 @@ func TestValidateErrors(t *testing.T) {
 		{
 			name: "unknown agent",
 			mutate: func(c *Config) {
-				c.Agents["gemini"] = AgentConfig{Enabled: true}
+				c.Agents["totally-made-up-agent"] = AgentConfig{Enabled: true}
 			},
 			wantSub: "unknown agent",
 		},

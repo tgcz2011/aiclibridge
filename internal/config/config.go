@@ -15,7 +15,7 @@ import (
 // KnownAgents lists the agent names aiclibridge supports in v1. The
 // order is stable so Defaults and env-override loops visit agents
 // deterministically.
-var KnownAgents = []string{"claude", "codex", "opencode", "openclaw"}
+var KnownAgents = []string{"claude", "codex", "opencode", "openclaw", "qwen", "gemini"}
 
 // knownAgent is a set for O(1) membership checks during Validate.
 var knownAgent = func() map[string]struct{} {
@@ -120,7 +120,7 @@ func (m *MCPConfig) UnmarshalYAML(value *yaml.Node) error {
 
 // Defaults returns a Config with sensible defaults: listen on the
 // loopback, data dir under ./data, info logging, no global timeout,
-// and all four agents enabled with empty (PATH-discovered) executables.
+// and all known agents enabled with empty (PATH-discovered) executables.
 // Env overrides are NOT applied here; call Load to layer them on.
 func Defaults() *Config {
 	c := &Config{
@@ -215,8 +215,8 @@ func applyEnvOverrides(c *Config) {
 
 // Validate checks the config for required fields and known values. It
 // returns an error if listen is empty, log_level is not one of
-// debug|info|warn|error, or any agent name is outside
-// claude|codex|opencode|openclaw.
+// debug|info|warn|error, or any agent name is outside the KnownAgents
+// set (claude|codex|opencode|openclaw|qwen|gemini).
 func (c *Config) Validate() error {
 	if c.Listen == "" {
 		return errors.New("config: listen must not be empty")

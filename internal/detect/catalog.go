@@ -7,7 +7,7 @@ import "context"
 // HTTP catalog endpoint emits a stable, testable listing. Adding a CLI here
 // is the single source of truth for "what does the bridge know about" —
 // detect.go picks it up automatically.
-var supportedCLIs = []string{"claude", "codex", "opencode", "openclaw"}
+var supportedCLIs = []string{"claude", "codex", "opencode", "openclaw", "qwen", "gemini"}
 
 // hardcodedCatalog is the v1 Discoverer. It returns the static provider/model
 // tables shipped in source, the same ones surfaced by DefaultCatalog for
@@ -71,6 +71,24 @@ var hardcodedCatalog = map[string][]ProviderInfo{
 			Models: []ModelInfo{
 				{Name: "doubao-seedream-4-0", DisplayName: "Doubao Seedream 4.0"},
 				{Name: "doubao-seedance-1-0", DisplayName: "Doubao Seedance 1.0"},
+			},
+		},
+	},
+	"qwen": {
+		{
+			Name: "alibaba",
+			Models: []ModelInfo{
+				{Name: "qwen3-coder-plus", DisplayName: "Qwen3 Coder Plus"},
+				{Name: "qwen3-max", DisplayName: "Qwen3 Max"},
+			},
+		},
+	},
+	"gemini": {
+		{
+			Name: "google",
+			Models: []ModelInfo{
+				{Name: "gemini-2.5-pro", DisplayName: "Gemini 2.5 Pro"},
+				{Name: "gemini-2.5-flash", DisplayName: "Gemini 2.5 Flash"},
 			},
 		},
 	},

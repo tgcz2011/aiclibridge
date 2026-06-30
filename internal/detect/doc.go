@@ -4,9 +4,9 @@
 // The package surfaces two complementary views:
 //
 //   - DefaultCatalog returns the hardcoded provider/model tables for every
-//     supported CLI (claude, codex, opencode, openclaw) regardless of
-//     installation state. This is the "what the bridge can know about"
-//     view used by clients to preview routing options.
+//     supported CLI (claude, codex, opencode, openclaw, qwen, gemini)
+//     regardless of installation state. This is the "what the bridge can
+//     know about" view used by clients to preview routing options.
 //   - Discover probes the host in parallel and reports, per CLI, whether
 //     the binary is on PATH, its --version, and the providers/models it
 //     serves. This is the "what is actually installed here" view.
