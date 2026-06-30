@@ -437,8 +437,8 @@ func TestRunVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read pipe: %v", err)
 	}
-	if !strings.Contains(string(out), "0.1.0") {
-		t.Errorf("runVersion output: %q missing 0.1.0", string(out))
+	if !strings.Contains(string(out), Version) {
+		t.Errorf("runVersion output: %q missing %q", string(out), Version)
 	}
 }
 
