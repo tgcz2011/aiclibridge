@@ -2,8 +2,10 @@
 //
 // It hosts the per-CLI adapters that translate aiclibridge's internal
 // request model into the wire protocol of each supported coding CLI
-// (Claude Code, Codex, OpenCode, OpenClaw, Gemini). Adapters are
-// registered in a later milestone.
+// (Claude Code, Codex, OpenCode, OpenClaw). Each backend lives in its
+// own file (claude.go, codex.go, opencode.go, openclaw.go) and shares
+// process-supervision helpers from helpers.go. A gemini stub remains
+// gated behind the v1 four-CLI surface.
 package adapter
 
 import (
@@ -191,9 +193,7 @@ type codexBackend struct {
 	cfg Config
 }
 
-func (b *codexBackend) Execute(ctx context.Context, prompt string, opts ExecOptions) (*Session, error) {
-	return nil, fmt.Errorf("codex adapter not yet implemented")
-}
+// codexBackend.Execute lives in internal/adapter/codex.go.
 
 type opencodeBackend struct {
 	cfg Config
