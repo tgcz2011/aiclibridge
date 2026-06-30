@@ -217,6 +217,17 @@ func detectCLIVersion(ctx context.Context, execPath string) (string, error) {
 	return extractVersionLine(string(data)), nil
 }
 
+// DetectCLIVersion is the exported alias for detectCLIVersion. It runs
+// `<execPath> --version` and returns the trimmed version line, with the
+// same 10s timeout, WaitDelay pipe-reaping, and extractVersionLine
+// post-processing as the daemon-internal preflight. Exposed so the
+// internal/detect package can reuse the exact version probe the adapters
+// use, instead of re-implementing an equivalent and risking drift in
+// timeout handling, version regex, or shim-output handling.
+func DetectCLIVersion(ctx context.Context, execPath string) (string, error) {
+	return detectCLIVersion(ctx, execPath)
+}
+
 // extractVersionLine pulls the version line out of a `<cli> --version`
 // capture, discarding leading shell noise. On Windows, npm-installed CLI
 // shims emit `chcp` output like `Active code page: 65001` before the real
