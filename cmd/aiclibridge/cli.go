@@ -197,12 +197,11 @@ func logCatalogSummary(logger *slog.Logger, catalog []detect.CLIInfo) {
 // ── runServe ──
 
 // runServe is the original daemon entry point, parameterised by
-// --config and --listen. It mirrors the pre-subcommand main.go exactly
-// (config → logger → data dir → SQLite store → detect → facade → HTTP
-// server → signal-driven graceful shutdown) so existing operators see
-// no behavioural change beyond the `serve` verb prefix. The shutdown
-// order is preserved: HTTP (reject new requests) → facade (cancel
-// in-flight runs) → store (release SQLite handles).
+// --config and --listen. It parses flags, loads config, honours the
+// --listen override, then delegates to serveStack for the server
+// lifecycle (data dir → SQLite store → detect → facade → HTTP server →
+// signal-driven graceful shutdown). runServe is foreground-only: it
+// does NOT write a pid file — that is runDaemonForeground's job.
 //
 // Returns the process exit code so main.go can os.Exit with it; the
 // function never calls os.Exit itself so deferred cleanups run.
@@ -227,16 +226,37 @@ func runServe(args []string) int {
 	}
 
 	logger := setupLogger(cfg.LogLevel)
+	return serveStack(cfg, logger, "serve")
+}
 
-	// Data dir + SQLite store. MkdirAll is idempotent.
+// serveStack builds the (data dir → SQLite store → detect → facade →
+// HTTP server) stack and runs it until a signal is received or the
+// server fails, returning the exit code. It is the shared core of
+// runServe (foreground, no pid file) and runDaemonForeground (daemon
+// child, pid file managed by the caller). The verb ("serve" or "start")
+// is used in error messages so the user sees the right prefix.
+//
+// The shutdown order is preserved from the original implementations:
+// HTTP first (reject new requests, drain short in-flight) → facade
+// (cancel running runs) → store (release SQLite handles). A
+// ListenAndServe failure (port in use, bind error) is fatal; runtime
+// request errors are handled by the API layer and never reach here.
+//
+// ReadHeaderTimeout caps slowloris; no Read / Write timeout because SSE
+// streams and long-running runs must hold connections open indefinitely.
+func serveStack(cfg *config.Config, logger *slog.Logger, verb string) int {
+	// Data dir + SQLite store. MkdirAll is idempotent and ensures the
+	// pid file's parent (in daemon mode) exists even if a user wiped
+	// the data dir between the parent's loadConfig and the child's
+	// startup.
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
-		fmt.Fprintf(os.Stderr, "aiclibridge serve: mkdir data dir: %v\n", err)
+		fmt.Fprintf(os.Stderr, "aiclibridge %s: mkdir data dir: %v\n", verb, err)
 		return 1
 	}
 	dbPath := filepath.Join(cfg.DataDir, "aiclibridge.db")
 	st, err := store.Open(dbPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "aiclibridge serve: open store: %v\n", err)
+		fmt.Fprintf(os.Stderr, "aiclibridge %s: open store: %v\n", verb, err)
 		return 1
 	}
 
@@ -254,7 +274,7 @@ func runServe(args []string) int {
 	fc, err := facade.New(cfg, st, catalog, logger)
 	if err != nil {
 		_ = st.Close()
-		fmt.Fprintf(os.Stderr, "aiclibridge serve: build facade: %v\n", err)
+		fmt.Fprintf(os.Stderr, "aiclibridge %s: build facade: %v\n", verb, err)
 		return 1
 	}
 

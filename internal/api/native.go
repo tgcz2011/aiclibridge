@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/tgcz2011/aiclibridge/internal/detect"
@@ -65,6 +66,18 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		Stream:          true,
 	})
 	if err != nil {
+		// A queue timeout is a load-shed signal, not an upstream bug:
+		// return 503 + Retry-After so clients back off rather than retry
+		// immediately. The error message includes the active/max counts
+		// so the client can see how saturated the server is.
+		if errors.Is(err, facadepkg.ErrQueueTimeout) {
+			w.Header().Set("Retry-After", "5")
+			writeError(w, http.StatusServiceUnavailable,
+				"server busy: concurrency limit reached and queue timeout elapsed. "+
+					"Retry later. ("+err.Error()+")",
+				"queue_timeout_error", err)
+			return
+		}
 		writeError(w, http.StatusBadGateway,
 			"facade failed to start run: "+err.Error(), "upstream_error", err)
 		return
@@ -223,21 +236,45 @@ func (s *Server) handleAnthropicModels(w http.ResponseWriter, r *http.Request) {
 
 // ── Native helpers ──
 
+// maxCollectEvents caps the in-memory event slice for non-streaming
+// responses. A run that emits more events (e.g. a very long agent session)
+// has its intermediate events dropped from the JSON response but the
+// terminal EventResult is always retained so status/output/usage are
+// correct. The store still persists every event for replay via GetRun.
+// 10000 is ~10MB worst case (1KB/event) which is acceptable for a single
+// HTTP response; beyond that the GC pressure outweighs the value of
+// returning the full timeline inline.
+const maxCollectEvents = 10000
+
 // collectEvents drains the run's live event channel until it closes,
 // returning the full timeline. It watches r.Context().Done() so a client
 // disconnect cancels the run rather than wedging the forwarder; in that
 // case the second return is false and the caller should write no response.
 // This is the non-streaming counterpart to streamNativeEvents.
+//
+// To bound memory for very long runs, once the slice reaches
+// maxCollectEvents only EventResult events are appended (the terminal
+// event is always kept so buildRunResult sees the correct status). The
+// store retains the full timeline for replay.
 func collectEvents(r *http.Request, handle *facadepkg.RunHandle) ([]protocol.Event, bool) {
 	gone := r.Context().Done()
 	var events []protocol.Event
+	capReached := false
 	for {
 		select {
 		case ev, ok := <-handle.Events:
 			if !ok {
 				return events, true
 			}
+			// Once at capacity, drop intermediate events to bound memory;
+			// always keep EventResult so the terminal status survives.
+			if capReached && ev.Type != protocol.EventResult {
+				continue
+			}
 			events = append(events, ev)
+			if !capReached && len(events) >= maxCollectEvents {
+				capReached = true
+			}
 		case <-gone:
 			handle.Cancel()
 			return events, false

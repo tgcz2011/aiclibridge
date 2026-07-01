@@ -3,6 +3,8 @@ package store
 import (
 	"bytes"
 	"context"
+	"database/sql"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -302,5 +304,154 @@ func TestGetUsageStats(t *testing.T) {
 	}
 	if len(empty) != 0 {
 		t.Errorf("future window: got %d rows, want 0", len(empty))
+	}
+}
+
+// TestMigrationsIdempotent verifies the migration runner is idempotent
+// across close/reopen: opening a file-backed DB, closing it, and opening
+// it again must not error and must leave schema_migrations with the same
+// max version (the migrations are not re-run). This is the guarantee the
+// daemon relies on — every Open re-applies the runner, and a steady-state
+// DB must be a no-op.
+func TestMigrationsIdempotent(t *testing.T) {
+	dsn := filepath.Join(t.TempDir(), "idempotent.db")
+
+	s1, err := Open(dsn)
+	if err != nil {
+		t.Fatalf("first Open: %v", err)
+	}
+	var maxV1 sql.NullInt64
+	if err := s1.db.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&maxV1); err != nil {
+		t.Fatalf("query max version after first Open: %v", err)
+	}
+	if !maxV1.Valid || int(maxV1.Int64) < 1 {
+		t.Fatalf("after first Open: expected max version >= 1, got %v", maxV1)
+	}
+	if err := s1.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Reopen: the runner must see every migration already applied and do
+	// nothing — no error, no duplicate version rows, same max version.
+	s2, err := Open(dsn)
+	if err != nil {
+		t.Fatalf("second Open: %v", err)
+	}
+	t.Cleanup(func() { _ = s2.Close() })
+
+	var maxV2 sql.NullInt64
+	if err := s2.db.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&maxV2); err != nil {
+		t.Fatalf("query max version after second Open: %v", err)
+	}
+	if !maxV2.Valid {
+		t.Fatal("schema_migrations has no rows after reopen")
+	}
+	if int(maxV2.Int64) != int(maxV1.Int64) {
+		t.Errorf("max version changed across reopen: first=%d second=%d", int(maxV1.Int64), int(maxV2.Int64))
+	}
+
+	// Reopening must not insert duplicate rows for the same version.
+	var rowCount int
+	if err := s2.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&rowCount); err != nil {
+		t.Fatalf("count migration rows: %v", err)
+	}
+	if rowCount != int(maxV2.Int64) {
+		t.Errorf("migration row count: got %d, want %d (one row per version, no duplicates)", rowCount, int(maxV2.Int64))
+	}
+}
+
+// TestMigrationUpgradeFromV03 simulates opening a v0.3-era database: the
+// runs table already has usage_json (added by the old pragma-guarded
+// ALTER) but there is no schema_migrations table because the migration
+// framework did not exist yet. Open must record v1 as applied WITHOUT
+// re-running the ALTER (which would fail with "duplicate column") and
+// without erroring. This is the upgrade-invariant the framework must not
+// break — existing v0.3 databases on disk keep working.
+func TestMigrationUpgradeFromV03(t *testing.T) {
+	dsn := filepath.Join(t.TempDir(), "v03.db")
+
+	// Seed a v0.3-shaped DB by hand: full runs table (with usage_json),
+	// events, sessions, but NO schema_migrations table.
+	db0, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatalf("open raw db to seed v0.3 schema: %v", err)
+	}
+	const v03Schema = `
+CREATE TABLE runs (
+    id              TEXT PRIMARY KEY,
+    adapter         TEXT NOT NULL,
+    model           TEXT NOT NULL DEFAULT '',
+    status          TEXT NOT NULL DEFAULT 'pending',
+    started_at      INTEGER NOT NULL,
+    finished_at     INTEGER,
+    cwd             TEXT NOT NULL DEFAULT '',
+    cli_session_id  TEXT NOT NULL DEFAULT '',
+    error           TEXT NOT NULL DEFAULT '',
+    usage_json      TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE events (
+    run_id        TEXT NOT NULL,
+    seq           INTEGER NOT NULL,
+    type          TEXT NOT NULL,
+    payload_json  TEXT NOT NULL,
+    PRIMARY KEY(run_id, seq)
+);
+CREATE TABLE sessions (
+    id              TEXT PRIMARY KEY,
+    adapter         TEXT NOT NULL,
+    cli_session_id  TEXT NOT NULL DEFAULT '',
+    created_at      INTEGER NOT NULL
+);
+CREATE INDEX idx_events_run ON events(run_id, seq);`
+	if _, err := db0.Exec(v03Schema); err != nil {
+		_ = db0.Close()
+		t.Fatalf("seed v0.3 schema: %v", err)
+	}
+	if err := db0.Close(); err != nil {
+		t.Fatalf("close seeded db: %v", err)
+	}
+
+	// Open with the new code: the runner must detect usage_json already
+	// present and record v1 as applied without re-running the ALTER.
+	s, err := Open(dsn)
+	if err != nil {
+		t.Fatalf("Open upgraded v0.3 db: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	var maxVersion sql.NullInt64
+	if err := s.db.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&maxVersion); err != nil {
+		t.Fatalf("query max version: %v", err)
+	}
+	if !maxVersion.Valid || int(maxVersion.Int64) < 1 {
+		t.Fatalf("expected v1 recorded as applied, got maxVersion=%v", maxVersion)
+	}
+
+	// usage_json must appear exactly once — the upgrade shortcut must
+	// not have re-run the ALTER and duplicated the column.
+	var colCount int
+	if err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('runs') WHERE name='usage_json'`).Scan(&colCount); err != nil {
+		t.Fatalf("check usage_json column: %v", err)
+	}
+	if colCount != 1 {
+		t.Errorf("usage_json column count: got %d, want 1 (no duplicate ALTER on v0.3 upgrade)", colCount)
+	}
+
+	// The store must remain usable after the upgrade: a run round-trips.
+	ctx := context.Background()
+	if err := s.CreateRun(ctx, "upg1", "claude", "claude-sonnet-4.5", "/tmp"); err != nil {
+		t.Fatalf("CreateRun after upgrade: %v", err)
+	}
+	if err := s.FinishRunWithUsage(ctx, "upg1", "completed", "s", "",
+		`{"claude-sonnet-4.5":{"input_tokens":7,"output_tokens":3}}`); err != nil {
+		t.Fatalf("FinishRunWithUsage after upgrade: %v", err)
+	}
+	r, err := s.GetRun(ctx, "upg1")
+	if err != nil {
+		t.Fatalf("GetRun after upgrade: %v", err)
+	}
+	if r.UsageJSON == "" {
+		t.Error("UsageJSON should be non-empty after FinishRunWithUsage")
 	}
 }

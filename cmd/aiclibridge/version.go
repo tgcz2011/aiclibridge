@@ -24,7 +24,13 @@ import (
 //   - v0.3.0: token/price stats API, high-concurrency SQLite (WAL +
 //     connection pool), background daemon (start/stop/restart/upgrade),
 //     per-request custom_args forwarding (e.g. `run -- --pure`).
-const Version = "0.3.0"
+//   - v0.4.0: cross-platform daemon (Windows best-effort), concurrency cap
+//     with queueing (semaphore + 503/Retry-After), pprof auth guard on
+//     non-loopback listen, configurable claude permission_mode, schema
+//     migration framework (schema_migrations), CLI version-check helpers,
+//     bounded in-memory event slice for non-streaming responses, pricing
+//     sort.Slice, daemon/server init de-duplication.
+const Version = "0.4.0"
 
 // Build and Commit are populated by -ldflags at link time
 // (`-X main.Build=... -X main.Commit=...`). They stay empty for local

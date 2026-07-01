@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/pprof"
 	"strings"
@@ -44,6 +45,9 @@ type facade interface {
 	// GetUsageStats backs the /v1/stats endpoints. It is a thin store
 	// passthrough; the api layer prices the rows via the pricing table.
 	GetUsageStats(ctx context.Context, since, until int64) ([]store.UsageStatRow, error)
+	// ConcurrencyStatus backs GET /v1/stats/concurrency. It returns a
+	// point-in-time snapshot of the concurrency cap (active/queued/max).
+	ConcurrencyStatus() facadepkg.ConcurrencyStatus
 }
 
 // Server is the HTTP API server. It is safe for concurrent use: the mux is
@@ -133,14 +137,35 @@ func (s *Server) registerRoutes() {
 	s.mux.Handle("GET /v1/stats/usage", s.chain(s.handleStatsUsage, true))
 	s.mux.Handle("GET /v1/stats/prices", s.chain(s.handleStatsPrices, true))
 	s.mux.Handle("GET /v1/stats/summary", s.chain(s.handleStatsSummary, true))
+	s.mux.Handle("GET /v1/stats/concurrency", s.chain(s.handleStatsConcurrency, true))
 
-	// pprof debug endpoints. Unauthenticated — the daemon listens on
-	// loopback by default so this is safe; if you bind to a public
-	// interface, put the daemon behind an authenticating reverse proxy.
-	// These endpoints let operators diagnose high-concurrency behaviour
-	// (goroutine leaks, heap growth, mutex contention) without restarting.
-	s.mux.Handle("GET /debug/pprof/", s.chain(http.HandlerFunc(pprof.Index), false))
-	s.mux.Handle("GET /debug/pprof/{path}", s.chain(http.HandlerFunc(pprof.Index), false))
+	// pprof debug endpoints. On a loopback listen they are unauthenticated
+	// (matches operator workflow: local curl /debug/pprof/heap). On a
+	// non-loopback listen (e.g. 0.0.0.0 in a container) pprof is gated by
+	// the same API-key auth as the rest of the API so goroutine/heap data
+	// is not exposed to anyone who can reach the port. Set
+	// permission_mode / api_key accordingly if you need unauthenticated
+	// pprof on a public interface — that is not the default.
+	pprofAuth := !isLoopbackListen(s.cfg.Listen)
+	s.mux.Handle("GET /debug/pprof/", s.chain(http.HandlerFunc(pprof.Index), pprofAuth))
+	s.mux.Handle("GET /debug/pprof/{path}", s.chain(http.HandlerFunc(pprof.Index), pprofAuth))
+}
+
+// isLoopbackListen reports whether the listen address binds only to the
+// loopback interface. ":port" and "0.0.0.0:port" bind all interfaces and
+// are NOT loopback; only explicit 127.0.0.1 / ::1 / localhost are. A
+// parse failure is treated as non-loopback (fail closed) so a malformed
+// listen string never accidentally exposes pprof.
+func isLoopbackListen(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	switch host {
+	case "127.0.0.1", "::1", "localhost":
+		return true
+	}
+	return false
 }
 
 // chain wraps a handler in the standard middleware stack. requireAuth

@@ -10,7 +10,11 @@
 // CLIs have no public token price).
 package pricing
 
-import "github.com/tgcz2011/aiclibridge/pkg/protocol"
+import (
+	"sort"
+
+	"github.com/tgcz2011/aiclibridge/pkg/protocol"
+)
 
 // Price is the per-million-token USD rate for one provider/model pair.
 // Any field may be zero when the vendor does not publish that component
@@ -155,7 +159,12 @@ func AllPrices() []PriceEntry {
 	}
 	// Stable order: provider then model. Avoids map-iteration
 	// nondeterminism in the HTTP response.
-	sortEntries(out)
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Provider != out[j].Provider {
+			return out[i].Provider < out[j].Provider
+		}
+		return out[i].Model < out[j].Model
+	})
 	return out
 }
 
@@ -168,19 +177,4 @@ func splitKey(k string) (provider, model string) {
 		}
 	}
 	return "", k
-}
-
-// sortEntries orders by provider then model. Kept here to keep the
-// package import-light (no sort at the top level beyond this).
-func sortEntries(e []PriceEntry) {
-	for i := 1; i < len(e); i++ {
-		for j := i; j > 0; j-- {
-			if e[j-1].Provider > e[j].Provider ||
-				(e[j-1].Provider == e[j].Provider && e[j-1].Model > e[j].Model) {
-				e[j-1], e[j] = e[j], e[j-1]
-			} else {
-				break
-			}
-		}
-	}
 }

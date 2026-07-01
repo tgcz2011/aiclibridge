@@ -165,6 +165,10 @@ func (f *fakeFacade) GetUsageStats(ctx context.Context, since, until int64) ([]s
 	return f.statsRows, f.statsErr
 }
 
+func (f *fakeFacade) ConcurrencyStatus() facadepkg.ConcurrencyStatus {
+	return facadepkg.ConcurrencyStatus{Max: 8, Active: 0, Queued: 0}
+}
+
 // ── Test helpers ──
 
 // newFakeFacade returns a facade preloaded with the default catalog and a

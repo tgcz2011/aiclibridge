@@ -537,13 +537,23 @@ type claudeControlRequestPayload struct {
 // cannot silently outvote a flag the protocol depends on (e.g. replacing
 // stream-json with text and breaking the parser).
 func buildClaudeArgs(opts ExecOptions, logger *slog.Logger) []string {
+	// Permission mode: defaults to bypassPermissions so Claude runs
+	// non-interactively (no TTY to confirm tool use). A user can narrow
+	// this via AgentConfig.PermissionMode (e.g. "acceptEdits", "default")
+	// to trade autonomy for safety. The flag is protocol-critical and is
+	// blocked from CustomArgs/ExtraArgs (see claudeBlockedArgs) so only
+	// this code path can set it.
+	permMode := opts.PermissionMode
+	if permMode == "" {
+		permMode = "bypassPermissions"
+	}
 	args := []string{
 		"-p",
 		"--output-format", "stream-json",
 		"--input-format", "stream-json",
 		"--verbose",
 		"--strict-mcp-config",
-		"--permission-mode", "bypassPermissions",
+		"--permission-mode", permMode,
 		// AskUserQuestion is Claude Code's built-in interactive question tool.
 		// The daemon runs Claude in non-interactive stream-json mode and has
 		// no UI for the prompt to render in, so a call returns an empty

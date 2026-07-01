@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -251,6 +252,141 @@ func extractVersionLine(raw string) string {
 		}
 	}
 	return strings.TrimSpace(raw)
+}
+
+// ── Generic CLI version helpers ──
+//
+// These are the generic, adapter-agnostic counterparts of the version
+// probe and minimum-version gate. Unlike detectCLIVersion (which is wired
+// into the daemon preflight with a fixed --version arg, hideAgentWindow,
+// and extractVersionLine post-processing), CheckCLIVersion lets the caller
+// supply the binary path and args, and returns the raw trimmed output so
+// the caller can parse whatever version format the CLI emits. Adapters
+// that do not yet have a minimum-version gate can use these two helpers
+// to add one without re-implementing the probe.
+//
+// Example usage (do NOT wire into every adapter yet — this is the shape
+// the wiring task will follow):
+//
+//	got, err := adapter.CheckCLIVersion(ctx, execPath)
+//	if err != nil {
+//	    logger.Warn("version probe failed", "cli", "codex", "err", err)
+//	} else {
+//	    adapter.WarnOnVersion(logger, "codex", got, "0.118.0")
+//	}
+//
+// The warning is non-fatal: a below-minimum CLI is logged but the run is
+// not blocked. An adapter that needs a hard gate (like openclaw) keeps
+// its own check returning an error; WarnOnVersion is for the soft path.
+
+// CheckCLIVersion runs `<binary> --version` (or a caller-supplied arg
+// set) and returns the version string. It is best-effort: any error
+// returns ("", err) and the caller logs a warning rather than failing.
+// The helper trims whitespace; the caller parses the version if it needs
+// ordering.
+//
+// When no args are supplied the default is ["--version"]. The timeout is
+// bounded by ctx — callers should pass a context with a deadline so a
+// wedged CLI fails fast instead of stalling the caller. Combined output
+// (stdout + stderr) is captured and trimmed, matching how most CLIs print
+// their version line.
+func CheckCLIVersion(ctx context.Context, binaryPath string, args ...string) (string, error) {
+	if len(args) == 0 {
+		args = []string{"--version"}
+	}
+	cmd := exec.CommandContext(ctx, binaryPath, args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// WarnOnVersion logs a warning when got is non-empty and parses as less
+// than minVersion using a simple semver-ish comparison (split on ".",
+// compare numeric components left to right; a component missing from the
+// shorter side counts as 0, so "2.1" equals "2.1.0"). If either version
+// cannot be parsed into numeric dot-components, it logs an info-level
+// "could not parse version" message instead of a warning — a non-semver
+// version string is not itself a reason to block the run.
+//
+// got empty is a no-op: the version probe already failed and the caller
+// is expected to have logged that separately. The comparison does not
+// pull in a semver library; it handles the common X.Y[.Z...] shape every
+// supported CLI emits. Pre-release suffixes (e.g. "1.2.3-beta") do not
+// parse and fall through to the info-level message.
+func WarnOnVersion(logger *slog.Logger, cliName, got, minVersion string) {
+	if got == "" {
+		return
+	}
+	cmp, ok := compareDotVersions(got, minVersion)
+	if !ok {
+		logger.Info("could not parse version", "cli", cliName, "got", got, "min", minVersion)
+		return
+	}
+	if cmp < 0 {
+		logger.Warn("cli version below minimum supported; upgrade recommended",
+			"cli", cliName, "got", got, "min", minVersion)
+	}
+}
+
+// compareDotVersions compares two dot-separated numeric version strings
+// left to right. It returns -1, 0, or +1 like bytes.Compare, and ok=false
+// if either string has any component that is not a base-10 integer — the
+// whole version must parse cleanly before any comparison runs, so a
+// trailing non-numeric component (e.g. the "3-beta" in "1.2.3-beta") is
+// detected even when an earlier component would otherwise short-circuit.
+// Components missing from the shorter side are treated as 0, so "2.1"
+// equals "2.1.0". An empty string splits to a single empty component,
+// which fails to parse, so the caller can distinguish "no version" from
+// "version 0".
+func compareDotVersions(a, b string) (int, bool) {
+	aParts := strings.Split(a, ".")
+	bParts := strings.Split(b, ".")
+	if !allNumeric(aParts) || !allNumeric(bParts) {
+		return 0, false
+	}
+	n := len(aParts)
+	if len(bParts) > n {
+		n = len(bParts)
+	}
+	for i := 0; i < n; i++ {
+		ai := partOrZero(aParts, i)
+		bi := partOrZero(bParts, i)
+		if ai < bi {
+			return -1, true
+		}
+		if ai > bi {
+			return 1, true
+		}
+	}
+	return 0, true
+}
+
+// allNumeric reports whether every component in parts parses as a base-10
+// integer. An empty input slice returns true (vacuously); a slice
+// containing a single empty string (the result of splitting "") returns
+// false because strconv.Atoi("") errors.
+func allNumeric(parts []string) bool {
+	for _, p := range parts {
+		if _, err := strconv.Atoi(p); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+// partOrZero returns the integer value of parts[i], or 0 when i is out of
+// range (a shorter version string). The caller MUST have validated via
+// allNumeric that every present component is numeric; out-of-range is the
+// only "missing" case here and is treated as 0 so "2.1" compares equal to
+// "2.1.0".
+func partOrZero(parts []string, i int) int {
+	if i >= len(parts) {
+		return 0
+	}
+	n, _ := strconv.Atoi(parts[i]) // allNumeric guaranteed
+	return n
 }
 
 // ── logWriter ──

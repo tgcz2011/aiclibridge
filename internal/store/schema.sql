@@ -50,3 +50,20 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id, seq);
+
+-- ── Migration bookkeeping ──
+--
+-- schema_migrations records which schema migrations have been applied.
+-- This table is NOT created by the base schema above; it is created and
+-- owned by the migration runner in store.go (runMigrations), which runs
+-- after the base schema is applied. The shape is documented here so
+-- schema.sql remains the single source of truth for the database layout.
+-- The runner issues the actual CREATE TABLE IF NOT EXISTS statement.
+--
+--   version     INTEGER PRIMARY KEY  -- migration version number, monotonic
+--   applied_at  INTEGER NOT NULL     -- unix seconds when the migration committed
+--
+-- CREATE TABLE IF NOT EXISTS schema_migrations (
+--     version    INTEGER PRIMARY KEY,
+--     applied_at INTEGER NOT NULL
+-- );

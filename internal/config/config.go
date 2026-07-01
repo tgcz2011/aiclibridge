@@ -55,7 +55,16 @@ type Config struct {
 	DataDir          string                 `yaml:"data_dir"`
 	LogLevel         string                 `yaml:"log_level"`
 	DefaultTimeoutMs int                    `yaml:"default_timeout_ms"`
-	Agents           map[string]AgentConfig `yaml:"agents"`
+	// MaxConcurrentRuns caps the number of runs executing adapter
+	// subprocesses at once. Excess requests queue up to QueueTimeoutMs
+	// and then fail with a clear "queue full" error. 0 means unlimited
+	// (the v0.3 behaviour); the default applied by Validate is 8.
+	MaxConcurrentRuns int                    `yaml:"max_concurrent_runs"`
+	// QueueTimeoutMs bounds how long a queued request waits for a
+	// concurrency slot before giving up. 0 means unlimited wait; the
+	// default applied by Validate is 60000 (60s).
+	QueueTimeoutMs int64                    `yaml:"queue_timeout_ms"`
+	Agents         map[string]AgentConfig `yaml:"agents"`
 }
 
 // AgentConfig is the per-CLI slice of Config. Fields map 1:1 onto
@@ -91,6 +100,13 @@ type AgentConfig struct {
 	// backend (local|gateway). Other backends ignore this field. The
 	// empty string is treated as "local" by the openclaw adapter.
 	OpenclawMode string `yaml:"openclaw_mode"`
+	// PermissionMode overrides the CLI's permission/autonomy mode for
+	// adapters that hardcode one (currently only claude, which defaults
+	// to bypassPermissions so it can run non-interactively). Set this to
+	// e.g. "acceptEdits" or "default" to trade autonomy for safety when
+	// running against a trusted cwd. Empty means "use the adapter
+	// default" (bypassPermissions for claude), preserving v0.3 behaviour.
+	PermissionMode string `yaml:"permission_mode"`
 }
 
 // MCPConfig is a JSON-encoded MCP server configuration. It is a named
@@ -236,6 +252,23 @@ func (c *Config) Validate() error {
 	}
 	if _, ok := validLogLevels[c.LogLevel]; !ok {
 		return fmt.Errorf("config: invalid log_level %q (want debug|info|warn|error)", c.LogLevel)
+	}
+	// Apply concurrency defaults: 0 means "not set" → default 8 / 60s.
+	// A negative value is rejected; an explicit 0 in YAML would mean
+	// "unlimited", but Validate cannot distinguish unset from explicit
+	// 0 for ints, so we treat 0 as unset and apply the default. Users
+	// who want unlimited can set a very large MaxConcurrentRuns.
+	if c.MaxConcurrentRuns == 0 {
+		c.MaxConcurrentRuns = 8
+	}
+	if c.MaxConcurrentRuns < 0 {
+		return fmt.Errorf("config: max_concurrent_runs must be >= 0 (got %d)", c.MaxConcurrentRuns)
+	}
+	if c.QueueTimeoutMs == 0 {
+		c.QueueTimeoutMs = 60000
+	}
+	if c.QueueTimeoutMs < 0 {
+		return fmt.Errorf("config: queue_timeout_ms must be >= 0 (got %d)", c.QueueTimeoutMs)
 	}
 	for name := range c.Agents {
 		if _, ok := knownAgent[name]; !ok {

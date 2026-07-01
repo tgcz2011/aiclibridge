@@ -8,38 +8,33 @@
 // `stop` reads the pid file and SIGTERM/SIGKILLs the process. `restart`
 // is stop+start. `upgrade` runs `go install ...@latest` then restarts.
 //
-// The foreground server startup (runDaemonForeground) intentionally
-// duplicates runServe's wiring rather than sharing a helper: runServe is
-// the public, behaviour-frozen entry point and must keep its foreground-
-// only, no-pid-file semantics. The duplication is ~40 lines and keeps
-// the two modes isolated — a bug in daemon mode can never leak into
-// `serve`.
+// The foreground server startup (runDaemonForeground) shares its server
+// wiring with runServe via the serveStack helper in cli.go: both build
+// the same (data dir → SQLite store → detect → facade → HTTP server)
+// stack and run the same signal-driven graceful shutdown. runDaemonForeground
+// adds pid-file management on top; runServe keeps its foreground-only,
+// no-pid-file semantics.
 //
-// Unix-only: the fork uses syscall.SysProcAttr{Setsid:true} and process
-// checks use syscall.Kill. There is no Windows support; the build tag is
-// omitted (the file compiles on all platforms) but the daemon verbs are
-// only meaningful where Setsid exists.
+// Platform split: forkChild / processSignal / isRunning live in
+// daemon_unix.go (Setsid fork + syscall.Kill) and daemon_windows.go
+// (CREATE_NEW_PROCESS_GROUP + DETACHED_PROCESS + CTRL_BREAK/TerminateProcess).
+// The daemon verbs are fully supported on Unix; on Windows they are
+// best-effort (no graceful SIGTERM — CTRL+BREAK is sent but the fallback
+// is TerminateProcess).
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
-	"net/http"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
-	"github.com/tgcz2011/aiclibridge/internal/api"
 	"github.com/tgcz2011/aiclibridge/internal/config"
-	"github.com/tgcz2011/aiclibridge/internal/detect"
-	"github.com/tgcz2011/aiclibridge/internal/facade"
-	"github.com/tgcz2011/aiclibridge/internal/store"
 )
 
 // ── PID / log file helpers ──
@@ -110,28 +105,6 @@ func removePID(path string) {
 	_ = os.Remove(path)
 }
 
-// isRunning checks if a process with the given PID is alive. signal 0
-// delivers no signal but performs the existence/permission check: nil
-// means the process exists and we can signal it; ESRCH means it's gone;
-// EPERM means it exists but is owned by another user (still "running"
-// from the daemon's perspective, but we treat EPERM as not-ours and
-// return false so stop/start don't wedge on a foreign process).
-func isRunning(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	err := syscall.Kill(pid, 0)
-	if err == nil {
-		return true
-	}
-	if err == syscall.EPERM {
-		// Process exists but is not ours; treat as foreign/not-running
-		// so we don't try to manage a process we can't control.
-		return false
-	}
-	return false
-}
-
 // daemonAddr returns the listen address for display. It exists as a
 // named helper so call sites read as "show me the daemon address" rather
 // than reaching into cfg.Listen directly, and so a test can exercise the
@@ -143,12 +116,13 @@ func daemonAddr(cfg *config.Config) string {
 // ── runStart ──
 
 // runStart launches the daemon in the background. The parent process
-// forks a detached child (Setsid: new session, no controlling tty) that
-// re-execs itself as `aiclibridge start --foreground [--config ...]`,
-// redirects the child's stdin from /dev/null and stdout+stderr to the
-// log file, and exits 0 immediately after the fork succeeds. The child
-// writes its own PID to the pid file (in runDaemonForeground) so the
-// parent can poll for it to confirm the child reached server startup.
+// forks a detached child (Unix: Setsid — new session, no controlling tty;
+// Windows: CREATE_NEW_PROCESS_GROUP + DETACHED_PROCESS) that re-execs
+// itself as `aiclibridge start --foreground [--config ...]`, redirects
+// the child's stdin from /dev/null and stdout+stderr to the log file,
+// and exits 0 immediately after the fork succeeds. The child writes its
+// own PID to the pid file (in runDaemonForeground) so the parent can
+// poll for it to confirm the child reached server startup.
 //
 // If a daemon is already running (pid file present + process alive),
 // runStart refuses with exit 1 rather than forking a second child that
@@ -192,10 +166,11 @@ func runStart(args []string) int {
 	}
 
 	// We are the parent. Fork a detached child that re-execs self with
-	// --foreground so the child runs the server path above. Setsid
-	// detaches from the controlling tty; stdin from nil (no input);
-	// stdout+stderr appended to the log file so the child's output is
-	// captured after the parent exits.
+	// --foreground so the child runs the server path above. forkChild
+	// (daemon_unix.go / daemon_windows.go) sets the platform-appropriate
+	// detach attributes; stdin is nil (no input); stdout+stderr are
+	// appended to the log file so the child's output is captured after
+	// the parent exits.
 	logFile, err := os.OpenFile(logFilePath(cfg), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "aiclibridge start: open log file: %v\n", err)
@@ -206,13 +181,8 @@ func runStart(args []string) int {
 	if *configPath != "" {
 		cmdArgs = append(cmdArgs, "--config", *configPath)
 	}
-	cmd := exec.Command(os.Args[0], cmdArgs...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	cmd.Stdin = nil
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
-	cmd.Env = os.Environ()
-	if err := cmd.Start(); err != nil {
+	cmd, err := forkChild(cmdArgs, logFile)
+	if err != nil {
 		_ = logFile.Close()
 		fmt.Fprintf(os.Stderr, "aiclibridge start: fork daemon: %v\n", err)
 		return 1
@@ -252,15 +222,16 @@ func runStart(args []string) int {
 }
 
 // runDaemonForeground is the in-child server path: it writes the pid
-// file, builds the same stack runServe builds (data dir → SQLite store →
-// detect → facade → HTTP server), installs a signal handler that
-// gracefully shuts down AND removes the pid file, and returns the exit
-// code. The deferred removePID guarantees the pid file is cleaned up on
-// every exit path — signal, server failure, or panic-recovered return.
+// file, delegates to serveStack for the (data dir → SQLite store →
+// detect → facade → HTTP server → signal-driven graceful shutdown)
+// lifecycle, and removes the pid file on exit via the deferred
+// removePID. The deferred removePID guarantees the pid file is cleaned
+// up on every exit path — signal, server failure, or panic-recovered
+// return.
 //
-// This duplicates runServe's wiring by design (see package doc): runServe
-// is frozen to its foreground-only behaviour and must not gain a pid
-// file. The ~40 lines of duplication keep the two modes isolated.
+// The server wiring is shared with runServe via serveStack (cli.go);
+// runDaemonForeground adds only the pid-file management that runServe
+// deliberately omits.
 func runDaemonForeground(cfg *config.Config, pidFile string) int {
 	if err := writePID(pidFile, os.Getpid()); err != nil {
 		fmt.Fprintf(os.Stderr, "aiclibridge start: write pid file: %v\n", err)
@@ -269,90 +240,29 @@ func runDaemonForeground(cfg *config.Config, pidFile string) int {
 	defer removePID(pidFile)
 
 	logger := setupLogger(cfg.LogLevel)
-
-	// Data dir + SQLite store. MkdirAll is idempotent and ensures the
-	// pid file's parent exists even if a user wiped the data dir between
-	// the parent's loadConfig and the child's startup.
-	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
-		fmt.Fprintf(os.Stderr, "aiclibridge start: mkdir data dir: %v\n", err)
-		return 1
-	}
-	dbPath := filepath.Join(cfg.DataDir, "aiclibridge.db")
-	st, err := store.Open(dbPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "aiclibridge start: open store: %v\n", err)
-		return 1
-	}
-
-	ctx := context.Background()
-	catalog, err := detect.Discover(ctx)
-	if err != nil {
-		logger.Warn("detect failed, using default catalog", "error", err)
-		catalog = detect.DefaultCatalog()
-	}
-	logCatalogSummary(logger, catalog)
-
-	fc, err := facade.New(cfg, st, catalog, logger)
-	if err != nil {
-		_ = st.Close()
-		fmt.Fprintf(os.Stderr, "aiclibridge start: build facade: %v\n", err)
-		return 1
-	}
-
-	srv := api.NewServer(fc, cfg, logger)
-	httpSrv := &http.Server{
-		Addr:              srv.ListenAddr(),
-		Handler:           srv.Handler(),
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-
-	errCh := make(chan error, 1)
-	go func() {
-		logger.Info("aiclibridge listening", "addr", httpSrv.Addr)
-		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			errCh <- err
-		}
-	}()
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-
-	select {
-	case err := <-errCh:
-		logger.Error("http server failed", "error", err)
-		_ = fc.Close()
-		_ = st.Close()
-		return 1
-	case sig := <-sigCh:
-		logger.Info("shutting down", "signal", sig.String())
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := httpSrv.Shutdown(shutdownCtx); err != nil {
-			logger.Warn("http shutdown exceeded budget", "error", err)
-		}
-		if err := fc.Close(); err != nil {
-			logger.Warn("facade close error", "error", err)
-		}
-		if err := st.Close(); err != nil {
-			logger.Warn("store close error", "error", err)
-		}
-		logger.Info("aiclibridge stopped")
-		return 0
-	}
+	return serveStack(cfg, logger, "start")
 }
 
 // ── runStop ──
 
 // runStop terminates the daemon by reading the pid file and sending
-// SIGTERM. If the process does not exit within 10 seconds it is
-// SIGKILLed. A stale pid file (process gone) is removed and reported as
-// "not running" rather than treated as an error condition.
+// SIGTERM (Unix: syscall.Kill; Windows: CTRL+BREAK, best-effort). If the
+// process does not exit within 10 seconds it is SIGKILLed (Unix) /
+// TerminateProcess'd (Windows). A stale pid file (process gone) is
+// removed and reported as "not running" rather than treated as an error
+// condition.
 //
 // The pid file is removed after the process is confirmed dead, so a
 // subsequent `start` sees no live daemon and forks cleanly. Removing it
 // unconditionally at the end (even after SIGKILL) matches the daemon's
 // own deferred removePID — whichever side wins the race, the file is
 // gone.
+//
+// Windows has no graceful SIGTERM: processSignal(SIGTERM) sends
+// CTRL+BREAK to the child's process group, which the Go runtime maps to
+// os.Interrupt — if the child installed a handler (serveStack does) it
+// can shut down gracefully, but this is best-effort. The SIGKILL fallback
+// (TerminateProcess) is unconditional.
 func runStop(args []string) int {
 	fs := flag.NewFlagSet("stop", flag.ContinueOnError)
 	configPath := fs.String("config", "", "path to config file (default: search order)")
@@ -386,7 +296,9 @@ func runStop(args []string) int {
 	}
 
 	// SIGTERM first for a graceful shutdown (drain in-flight requests).
-	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+	// processSignal is platform-dispatched: syscall.Kill on Unix,
+	// CTRL+BREAK on Windows.
+	if err := processSignal(pid, syscall.SIGTERM); err != nil {
 		fmt.Fprintf(os.Stderr, "aiclibridge stop: signal: %v\n", err)
 		return 1
 	}
@@ -401,7 +313,7 @@ func runStop(args []string) int {
 
 	// Force kill if still alive.
 	if isRunning(pid) {
-		_ = syscall.Kill(pid, syscall.SIGKILL)
+		_ = processSignal(pid, syscall.SIGKILL)
 		time.Sleep(500 * time.Millisecond)
 	}
 

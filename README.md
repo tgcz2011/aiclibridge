@@ -5,18 +5,24 @@ AICLIBridge 是一个统一 AI CLI 桥:用一个 HTTP API 同时驱动 Claude Co
 ![CI](https://github.com/tgcz2011/aiclibridge/actions/workflows/ci.yml/badge.svg)
 ![Go](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue)
-![Release](https://img.shields.io/badge/release-v0.3.0-blue)
+![Release](https://img.shields.io/badge/release-v0.4.0-blue)
 
 ## 核心特性
 
 - **三套接口**:OpenAI 兼容 `/v1/chat/completions` + `/v1/models`、Anthropic 兼容 `/v1/messages`、原生 `/v1/runs` SSE 流
 - **token / 价格统计**:`/v1/stats/usage`、`/v1/stats/prices`、`/v1/stats/summary` 三端点,per-model token 用量 + USD 估算
+- **并发上限 + 排队**:`max_concurrent_runs`(默认 8)+ `queue_timeout_ms`(默认 60s)信号量,超出排队等待,超时返回 `503 + Retry-After: 5`;`/v1/stats/concurrency` 实时查询 active/queued
+- **安全加固**:`/debug/pprof/` 在非 loopback 监听(如 `0.0.0.0`)时自动加 API-key 鉴权;Claude 的 `--permission-mode` 改为可配置(`permission_mode`),空值回退 `bypassPermissions` 保持 v0.3 行为
+- **全平台 daemon**:Unix(Setsid + PID + SIGTERM/SIGKILL)、Windows(尽力而为:CREATE_NEW_PROCESS_GROUP + CTRL_BREAK_EVENT,无优雅 SIGTERM),`start` / `stop` / `restart` / `upgrade` 跨平台可用
+- **schema 迁移框架**:`schema_migrations` 表 + 顺序事务迁移,v0.3 升级自动兼容(检测已有 `usage_json` 列则跳过 ALTER 仅记录 version),告别脆弱的手动 `ALTER TABLE + pragma` 检查
+- **CLI 版本检测**:`CheckCLIVersion` + `WarnOnVersion` helpers(`internal/adapter/helpers.go`),适配器启动时打印低于最低版本的 warning,避免 CLI 改 flag 语义后无声失败
+- **内存优化**:非流式响应 `collectEvents` 上限 10000 事件,超限丢弃中间事件但保留 terminal `EventResult`,store 仍持久化全部事件供回放
+- **去重初始化**:`runDaemonForeground` 与 `runServe` 共用 `serveStack`,消除 ~40 行重复
 - **高并发优化**:SQLite WAL 模式 + 连接池(max(4, NumCPU))+ busy_timeout,事件缓冲 256→1024
 - **后台 daemon**:`start` / `stop` / `restart` / `upgrade` 子命令,fork 脱离终端,固定端口,PID 文件管理
 - **per-request 传参**:`run -- --pure` 用 `--` 分隔符向底层 CLI 透传 flag(如禁用 opencode plugin)
 - **六 CLI 统一**:claude / codex / opencode / openclaw / qwen / gemini,model name 形如 `claude/anthropic/claude-sonnet-4.5`
 - **强容错**:panic recover、超时降级、单 CLI 故障隔离、store 失败不致命、客户端断连自动取消 run
-- **不限并发**:每个 run 独立 goroutine,`sync.Map` 跟踪 live runs,SSE 长连接不设读写超时
 - **单二进制**:纯 Go + modernc.org/sqlite(纯 Go 驱动,免 CGO),`go install` 即装即用
 - **可重放**:每个 run 的完整事件时间线持久化到 SQLite,`GET /v1/runs/{id}` 可随时回放
 - **YAML + env 配置**:`./aiclibridge.yaml` 或 `AICLIBRIDGE_*` 环境变量覆盖,零配置也可启动
@@ -28,7 +34,8 @@ AICLIBridge 是一个统一 AI CLI 桥:用一个 HTTP API 同时驱动 Claude Co
 | 每个 CLI 协议不同(stream-json / JSON-RPC / NDJSON) | 统一成一套 HTTP API + 一种 model name |
 | OpenAI/Anthropic SDK 想直连 coding agent | 提供兼容层,SDK 零改动接入 |
 | 一个 CLI 崩了拖垮整批 | 单 CLI 故障隔离,panic 转 500,daemon 不挂 |
-| 并发一高就排队 | 不设全局并发上限,每 run 独立 goroutine |
+| 并发一高就 OOM / 拖垮机器 | 可配置并发上限 + 排队,超时 503 + Retry-After |
+| pprof / 权限 mode 等安全细节疏漏 | 非 loopback pprof 自动加 auth,permission_mode 可配 |
 | 多工具要装一堆依赖 | 单静态二进制,无 CGO |
 
 ## 快速开始

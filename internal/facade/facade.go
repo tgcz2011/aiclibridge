@@ -27,7 +27,7 @@
 //   - Store write failures (CreateRun/AppendEvent/FinishRun) are logged as
 //     warnings and never abort a run — the store is a persistence helper, not
 //     the source of truth. The adapter.Session is the source of truth.
-//   - The Events channel is buffered (256). Intermediate events use trySend
+//   - The Events channel is buffered (1024; see eventsChanBuffer). Intermediate events use trySend
 //     (non-blocking; a full buffer drops the event from the live stream but the
 //     store still has it for replay). The terminal EventResult uses a blocking
 //     send with a timeout fallback so a dead consumer cannot wedge the
@@ -43,6 +43,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tgcz2011/aiclibridge/internal/adapter"
@@ -75,14 +76,44 @@ const resultWaitTimeout = 30 * time.Second
 // consumer.
 const terminalSendTimeout = 30 * time.Second
 
+// ErrQueueTimeout is returned by StartRun when the concurrency cap is
+// reached and the request waited longer than QueueTimeoutMs for a slot.
+// The API layer maps this to 503 with a clear message so the client
+// knows to retry rather than treat it as a server bug.
+var ErrQueueTimeout = errors.New("facade: concurrency queue timeout (server busy; retry later)")
+
+// ConcurrencyStatus is a snapshot of the concurrency cap state, returned
+// by ConcurrencyStatus() for the /v1/stats/concurrency endpoint. All
+// fields are point-in-time and may change immediately after reading.
+type ConcurrencyStatus struct {
+	Max      int  `json:"max"`       // configured cap; 0 means unlimited
+	Active   int  `json:"active"`    // runs currently holding a slot
+	Queued   int  `json:"queued"`    // requests blocked waiting for a slot
+	Unlimited bool `json:"unlimited"` // true when no cap is configured
+}
+
+// ConcurrencyStatus returns a point-in-time snapshot of the concurrency
+// cap. It is safe for concurrent use (atomic reads). The API layer
+// exposes this at GET /v1/stats/concurrency so operators can monitor
+// queue pressure without scraping pprof.
+func (f *Facade) ConcurrencyStatus() ConcurrencyStatus {
+	return ConcurrencyStatus{
+		Max:        f.maxConcurrent,
+		Active:     int(atomic.LoadInt32(&f.activeCount)),
+		Queued:     int(atomic.LoadInt32(&f.queuedCount)),
+		Unlimited:  f.concurrencySem == nil,
+	}
+}
+
 // Facade is the orchestration layer between HTTP API and adapters. It is
 // safe for concurrent use: adapters are built once at construction and never
 // mutated; live runs are tracked in a sync.Map; the store serialises its own
 // writes. A zero Facade is NOT usable — always construct via New.
 type Facade struct {
 	// cfg is the daemon configuration retained for per-run ExecOptions
-	// assembly (ExtraArgs, MCPConfig, ThinkingLevel, OpenclawMode come from
-	// the per-agent AgentConfig at run time, not at Backend construction).
+	// assembly (ExtraArgs, MCPConfig, ThinkingLevel, OpenclawMode,
+	// PermissionMode come from the per-agent AgentConfig at run time,
+	// not at Backend construction).
 	cfg *config.Config
 	// adapters maps CLI name ("claude", "codex", "opencode", "openclaw")
 	// to its Backend. Built once in New from cfg.Agents[cli].Enabled; an
@@ -97,6 +128,24 @@ type Facade struct {
 	// runs maps runID -> *RunHandle for every live run. A run is removed
 	// when its forwarder goroutine exits. Used by CancelRun and Close.
 	runs sync.Map
+	// concurrencySem caps the number of runs executing adapter
+	// subprocesses concurrently. Acquired in StartRun (blocking up to
+	// queueTimeout), released in forwardEvents' defer stack. nil means
+	// unlimited (MaxConcurrentRuns <= 0).
+	concurrencySem chan struct{}
+	// queueTimeout bounds how long StartRun blocks on concurrencySem
+	// before returning ErrQueueTimeout. Zero means block forever.
+	queueTimeout time.Duration
+	// maxConcurrent is the configured cap, surfaced via ConcurrencyStatus.
+	// 0 means unlimited.
+	maxConcurrent int
+	// activeCount is the number of runs currently holding a concurrency
+	// slot (atomic). Read by ConcurrencyStatus for the /v1/stats/concurrency
+	// endpoint without touching the semaphore.
+	activeCount int32
+	// queuedCount is the number of requests currently blocked waiting
+	// for a slot (atomic). Read by ConcurrencyStatus.
+	queuedCount int32
 }
 
 // RunHandle is a running run's handle, returned by StartRun for streaming.
@@ -218,6 +267,16 @@ func NewWithBackends(cfg *config.Config, store *store.Store, catalog []detect.CL
 		adapters: make(map[string]adapter.Backend),
 	}
 
+	// Concurrency cap. Validate() applies the default 8 when unset, so
+	// MaxConcurrentRuns > 0 here means a cap is active. A buffered
+	// channel of that capacity is the semaphore: send to acquire,
+	// receive to release. nil semaphore = unlimited (tests / explicit 0).
+	if cfg.MaxConcurrentRuns > 0 {
+		f.concurrencySem = make(chan struct{}, cfg.MaxConcurrentRuns)
+		f.maxConcurrent = cfg.MaxConcurrentRuns
+		f.queueTimeout = time.Duration(cfg.QueueTimeoutMs) * time.Millisecond
+	}
+
 	if backends != nil {
 		for name, b := range backends {
 			f.adapters[name] = b
@@ -279,14 +338,44 @@ func (f *Facade) StartRun(ctx context.Context, req RunRequest) (*RunHandle, erro
 	agentCfg := f.cfg.Agents[cliName]
 	opts := f.buildExecOptions(req, agentCfg, modelName)
 
-	// 6. Derive context with cancel / timeout.
+	// 6. Derive context with cancel / timeout (needed before the
+	// concurrency acquire so a queued request honours the caller's
+	// deadline / cancellation).
 	runCtx, cancel := f.deriveContext(ctx, req.TimeoutMs)
+
+	// 5b. Acquire a concurrency slot. If the cap is reached, block up
+	// to queueTimeout for a slot to free; on timeout return a clear
+	// error so the API layer can 503. The slot is released in
+	// forwardEvents' defer stack. Acquisition happens AFTER CreateRun so
+	// the run row exists (and can be inspected) while queued — but
+	// BEFORE safeExecute so the adapter subprocess is not spawned until
+	// a slot is held (no point spawning a process that can't run).
+	if f.concurrencySem != nil {
+		atomic.AddInt32(&f.queuedCount, 1)
+		select {
+		case f.concurrencySem <- struct{}{}:
+			// acquired
+		case <-time.After(f.queueTimeout):
+			atomic.AddInt32(&f.queuedCount, -1)
+			cancel()
+			f.finishRun(storeCtx, runID, "failed", "", ErrQueueTimeout.Error(), "")
+			return nil, fmt.Errorf("%w (active=%d, max=%d)", ErrQueueTimeout, atomic.LoadInt32(&f.activeCount), f.maxConcurrent)
+		case <-runCtx.Done():
+			atomic.AddInt32(&f.queuedCount, -1)
+			cancel()
+			f.finishRun(storeCtx, runID, "failed", "", "cancelled while queued", "")
+			return nil, runCtx.Err()
+		}
+		atomic.AddInt32(&f.queuedCount, -1)
+		atomic.AddInt32(&f.activeCount, 1)
+	}
 
 	// 7. Execute (panic-guarded). A panicking adapter returns an error,
 	// never crashes the daemon.
 	session, err := f.safeExecute(runCtx, cliName, backend, req.Prompt, opts)
 	if err != nil {
 		cancel()
+		f.releaseConcurrentSlot()
 		f.finishRun(storeCtx, runID, "failed", "", err.Error(), "")
 		return nil, err
 	}
@@ -493,15 +582,16 @@ func (f *Facade) resolveDefault() (cli, provider, modelName string, err error) {
 // (CustomArgs appended after cfg's so req wins on conflicting flags).
 func (f *Facade) buildExecOptions(req RunRequest, agent config.AgentConfig, modelName string) adapter.ExecOptions {
 	opts := adapter.ExecOptions{
-		Cwd:            req.Cwd,
-		Model:          modelName,
-		SystemPrompt:   req.SystemPrompt,
-		MaxTurns:       req.MaxTurns,
+		Cwd:             req.Cwd,
+		Model:           modelName,
+		SystemPrompt:    req.SystemPrompt,
+		MaxTurns:        req.MaxTurns,
 		ResumeSessionID: req.ResumeSessionID,
-		ExtraArgs:      agent.ExtraArgs,
-		McpConfig:      agent.MCPConfig.Raw(),
-		ThinkingLevel:  agent.ThinkingLevel,
-		OpenclawMode:   agent.OpenclawMode,
+		ExtraArgs:       agent.ExtraArgs,
+		McpConfig:       agent.MCPConfig.Raw(),
+		ThinkingLevel:   agent.ThinkingLevel,
+		OpenclawMode:    agent.OpenclawMode,
+		PermissionMode:  agent.PermissionMode,
 	}
 
 	// Merge CustomArgs: cfg base first, req overrides last.
@@ -527,6 +617,19 @@ func (f *Facade) deriveContext(ctx context.Context, timeoutMs int64) (context.Co
 		return context.WithTimeout(ctx, time.Duration(timeoutMs)*time.Millisecond)
 	}
 	return context.WithCancel(ctx)
+}
+
+// releaseConcurrentSlot releases a concurrency slot acquired in StartRun.
+// It is called from forwardEvents' defer stack (the normal exit path) and
+// from StartRun's error paths after acquisition. Safe to call when no cap
+// is configured (no-op) and idempotent (a second release drains a
+// different slot — callers must ensure release is called exactly once per
+// acquire).
+func (f *Facade) releaseConcurrentSlot() {
+	if f.concurrencySem != nil {
+		<-f.concurrencySem
+		atomic.AddInt32(&f.activeCount, -1)
+	}
 }
 
 // safeExecute wraps backend.Execute in a panic recover so a buggy adapter
@@ -571,6 +674,11 @@ func (f *Facade) forwardEvents(
 	terminalSent := false
 
 	// LIFO defer stack: last registered runs first.
+	// Release the concurrency slot LAST (registered first) so the next
+	// queued request only gets a slot after this forwarder has fully
+	// exited and the store is finalised — no point waking a queued
+	// request if this goroutine still holds adapter resources.
+	defer f.releaseConcurrentSlot()
 	// Cancel runs last (release context resources).
 	defer handle.Cancel()
 	// Remove from live map.

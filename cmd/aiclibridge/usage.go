@@ -35,9 +35,13 @@ Usage:
 Commands:
   serve    Start the HTTP daemon in the foreground (original behaviour).
   start    Start the HTTP daemon in the background; survives terminal close.
+           (Unix: full support; Windows: best-effort, no graceful SIGTERM.)
   stop     Stop the background daemon (reads pid file, SIGTERM then SIGKILL).
+           (Unix: full support; Windows: best-effort, no graceful SIGTERM.)
   restart  Stop then start the background daemon.
+           (Unix: full support; Windows: best-effort, no graceful SIGTERM.)
   upgrade  Self-update via 'go install' then restart the daemon.
+           (Unix: full support; Windows: best-effort, no graceful SIGTERM.)
   run      Run a single prompt against a CLI without a long-lived daemon.
   agents   List detected CLIs and their providers/models (local detect).
   models   List every CLI/provider/model routing key (local detect).

@@ -59,6 +59,12 @@ type ExecOptions struct {
 	// gateway. Other backends ignore this field, mirroring ThinkingLevel's
 	// renderer-side fall-through pattern.
 	OpenclawMode string
+	// PermissionMode overrides the CLI's permission/autonomy mode for
+	// adapters that hardcode one. Currently only claude honours it
+	// (default "bypassPermissions"); other backends ignore the field.
+	// Empty means "use the adapter default" so existing behaviour is
+	// preserved. Configured via AgentConfig.PermissionMode.
+	PermissionMode string
 }
 
 // runContext derives the execution context for an agent subprocess from the

@@ -122,28 +122,166 @@ func Open(dsn string) (*Store, error) {
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
 
-	// v0.3 migration: add usage_json column to runs if missing. CREATE
-	// TABLE IF NOT EXISTS skips existing tables, so a pre-v0.3 DB does not
-	// pick up the new column from the schema above. ALTER TABLE ADD COLUMN
-	// has no IF NOT EXISTS form in SQLite, so guard with a pragma check.
-	var colCount int
-	if err := db.QueryRowContext(context.Background(),
-		"SELECT COUNT(*) FROM pragma_table_info('runs') WHERE name='usage_json'").Scan(&colCount); err != nil {
+	// Sequential migration runner: applies pending migrations recorded
+	// in schema_migrations, replacing the old single-statement pragma
+	// guard. Runs after the base schema (runs/events/sessions) is in
+	// place. Idempotent — a DB that has already recorded a version never
+	// re-runs it, and a pre-migration-framework v0.3 DB (usage_json
+	// already present) is upgraded in place without re-ALTERing.
+	if err := runMigrations(context.Background(), db); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("check usage_json column: %w", err)
-	}
-	if colCount == 0 {
-		if _, err := db.ExecContext(context.Background(),
-			"ALTER TABLE runs ADD COLUMN usage_json TEXT NOT NULL DEFAULT ''"); err != nil {
-			_ = db.Close()
-			return nil, fmt.Errorf("add usage_json column: %w", err)
-		}
+		return nil, fmt.Errorf("apply migrations: %w", err)
 	}
 	return &Store{db: db}, nil
 }
 
 // Close releases the underlying connection pool.
 func (s *Store) Close() error { return s.db.Close() }
+
+// ── Migrations ──
+
+// migration is one sequential schema migration applied by runMigrations.
+// Each migration carries a monotonically increasing version and a single
+// SQL statement. Migrations already recorded in schema_migrations are
+// skipped by the runner, so the statement only ever runs once per DB.
+// The statement itself must be safe to apply exactly once on a DB that
+// has not yet seen it (e.g. ALTER TABLE ADD COLUMN, which has no IF NOT
+// EXISTS form in SQLite — the runner's bookkeeping is what makes it
+// idempotent across reopens).
+type migration struct {
+	version int
+	stmt    string
+}
+
+// migrations is the ordered list of schema migrations applied on every
+// Open, after the base schema. v1 is the v0.3 usage_json column: fresh
+// DBs already get it from the base CREATE TABLE runs, and pre-v0.3 DBs
+// get it via ALTER. Both paths end with v1 recorded as applied (see
+// runMigrations for the upgrade-from-pre-migration-framework shortcut),
+// so a DB upgraded from v0.3 is never re-ALTERed. Append new migrations
+// here with the next version number; never edit or reorder an existing
+// entry.
+var migrations = []migration{
+	{
+		version: 1,
+		stmt:    `ALTER TABLE runs ADD COLUMN usage_json TEXT NOT NULL DEFAULT ''`,
+	},
+}
+
+// runMigrations applies every pending migration in order. It is
+// idempotent: migrations already recorded in schema_migrations are
+// skipped. The schema_migrations table is created here (NOT in the base
+// schema) so the runner owns its lifecycle.
+//
+// Upgrade-from-pre-migration-framework: a v0.3 DB already has the
+// usage_json column (added by the old pragma-guarded ALTER) but has no
+// schema_migrations table. Once the runner creates schema_migrations it
+// is empty, so v1 would normally re-run the ALTER and fail with
+// "duplicate column". To avoid breaking existing v0.3 DBs, when
+// schema_migrations is empty AND the runs table already has usage_json,
+// v1 is recorded as applied without running the ALTER. Fresh DBs get
+// usage_json from the base CREATE TABLE, so the same shortcut records v1
+// for them too — the ALTER only runs for DBs whose runs table predates
+// usage_json entirely (e.g. a v0.1/v0.2 DB upgraded in place).
+func runMigrations(ctx context.Context, db *sql.DB) error {
+	const createMigrationsTable = `CREATE TABLE IF NOT EXISTS schema_migrations (
+		version    INTEGER PRIMARY KEY,
+		applied_at INTEGER NOT NULL
+	)`
+	if _, err := db.ExecContext(ctx, createMigrationsTable); err != nil {
+		return fmt.Errorf("create schema_migrations: %w", err)
+	}
+
+	// Highest version already applied. MAX over an empty table is NULL;
+	// scan into sql.NullInt64 and treat NULL as 0.
+	var maxVersion sql.NullInt64
+	if err := db.QueryRowContext(ctx, `SELECT MAX(version) FROM schema_migrations`).Scan(&maxVersion); err != nil {
+		return fmt.Errorf("query max migration version: %w", err)
+	}
+	applied := 0
+	if maxVersion.Valid {
+		applied = int(maxVersion.Int64)
+	}
+
+	// Upgrade shortcut: schema_migrations is empty but runs already has
+	// usage_json. This is either a fresh DB (usage_json came from the
+	// base CREATE TABLE) or a v0.3 DB upgraded in place (usage_json came
+	// from the old pragma-guarded ALTER). Either way the column is
+	// already present, so record v1 as applied without re-running the
+	// ALTER (which would fail with "duplicate column"). Only runs when no
+	// migration has been recorded yet, so it cannot mask a partially
+	// applied migration set.
+	if applied == 0 {
+		hasUsageJSON, err := runsTableHasColumn(ctx, db, "usage_json")
+		if err != nil {
+			return fmt.Errorf("check runs.usage_json for upgrade shortcut: %w", err)
+		}
+		if hasUsageJSON {
+			if err := recordMigration(ctx, db, 1); err != nil {
+				return fmt.Errorf("record upgrade shortcut v1: %w", err)
+			}
+			applied = 1
+		}
+	}
+
+	for _, m := range migrations {
+		if m.version <= applied {
+			continue
+		}
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin migration v%d: %w", m.version, err)
+		}
+		if _, err := tx.ExecContext(ctx, m.stmt); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("apply migration v%d: %w", m.version, err)
+		}
+		if err := recordMigrationTx(ctx, tx, m.version); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("record migration v%d: %w", m.version, err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit migration v%d: %w", m.version, err)
+		}
+	}
+	return nil
+}
+
+// recordMigration inserts a version row into schema_migrations with the
+// current unix timestamp. Used by the upgrade-shortcut path, which has
+// no DDL to guard and so does not need a transaction.
+func recordMigration(ctx context.Context, db *sql.DB, version int) error {
+	_, err := db.ExecContext(ctx,
+		`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`,
+		version, time.Now().Unix())
+	return err
+}
+
+// recordMigrationTx is the transaction-scoped twin of recordMigration:
+// the version row is inserted inside the migration's own transaction so
+// the schema change and the bookkeeping commit atomically.
+func recordMigrationTx(ctx context.Context, tx *sql.Tx, version int) error {
+	_, err := tx.ExecContext(ctx,
+		`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`,
+		version, time.Now().Unix())
+	return err
+}
+
+// runsTableHasColumn reports whether the runs table has a column named
+// col (matched case-sensitively, matching pragma_table_info output).
+// Uses pragma_table_info, the same introspection the old hand-rolled
+// migration relied on. Returns false if the runs table does not exist
+// (defensive; the base schema is applied before the runner, so runs
+// should always be present here).
+func runsTableHasColumn(ctx context.Context, db *sql.DB, col string) (bool, error) {
+	var n int
+	err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('runs') WHERE name = ?`, col).Scan(&n)
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
 
 // CreateRun inserts a new run row in `pending` status with the
 // current unix timestamp. Adapter and cwd are required; model may

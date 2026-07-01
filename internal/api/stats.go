@@ -235,3 +235,13 @@ func estimateRowCost(providerMap map[string]map[string]string, row store.UsageSt
 		CacheWriteTokens: int(row.CacheWriteTokens),
 	})
 }
+
+// handleStatsConcurrency returns a point-in-time snapshot of the
+// concurrency cap: how many runs are active, how many are queued, and
+// the configured max. This lets operators monitor queue pressure and
+// decide whether to raise max_concurrent_runs. The endpoint is authed
+// (operational data, not for unauthenticated enumeration).
+func (s *Server) handleStatsConcurrency(w http.ResponseWriter, r *http.Request) {
+	status := s.fc.ConcurrencyStatus()
+	writeJSON(w, http.StatusOK, status)
+}
