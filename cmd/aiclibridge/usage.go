@@ -42,6 +42,9 @@ Commands:
            (Unix: full support; Windows: best-effort, no graceful SIGTERM.)
   upgrade  Self-update via 'go install' then restart the daemon.
            (Unix: full support; Windows: best-effort, no graceful SIGTERM.)
+  update   Check GitHub for a newer release; prints a notice on stderr.
+           Best-effort: network/rate-limit failures exit 0 so scripting
+           is never blocked. Use 'update check --json' for machine output.
   run      Run a single prompt against a CLI without a long-lived daemon.
   agents   List detected CLIs and their providers/models (local detect).
   models   List every CLI/provider/model routing key (local detect).

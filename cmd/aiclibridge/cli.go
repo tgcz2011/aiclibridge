@@ -299,6 +299,13 @@ func serveStack(cfg *config.Config, logger *slog.Logger, verb string) int {
 		}
 	}()
 
+	// Best-effort background update check: logs a one-line hint to the
+	// daemon log if a newer release is available. Non-blocking and
+	// silent on failure — startup must not depend on GitHub.
+	maybeAsyncUpdateCheck(func(format string, args ...any) {
+		logger.Info("update check", "message", fmt.Sprintf(format, args...))
+	})
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 

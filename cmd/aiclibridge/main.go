@@ -49,6 +49,8 @@ func main() {
 		code = runRestart(rest)
 	case "upgrade":
 		code = runUpgrade(rest)
+	case "update":
+		code = runUpdate(rest)
 	case "run":
 		code = runRun(rest)
 	case "agents":

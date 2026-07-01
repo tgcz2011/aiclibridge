@@ -33,7 +33,12 @@ import (
 //   - v0.4.1: release workflow now ships a Windows amd64 binary
 //     (aiclibridge-windows-amd64.zip) alongside the darwin/linux tarballs;
 //     no code changes from v0.4.0.
-const Version = "0.4.1"
+//   - v0.5.0: one-line installers (scripts/install.sh for macOS/Linux,
+//     scripts/install.ps1 for Windows) with multi-arch + sha256 verify;
+//     `aiclibridge update` subcommand checks GitHub for a newer release
+//     (supports --json / --quiet); daemon startup logs an async update
+//     hint when a newer release exists.
+const Version = "0.5.0"
 
 // Build and Commit are populated by -ldflags at link time
 // (`-X main.Build=... -X main.Commit=...`). They stay empty for local

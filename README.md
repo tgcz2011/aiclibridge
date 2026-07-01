@@ -5,10 +5,12 @@ AICLIBridge 是一个统一 AI CLI 桥:用一个 HTTP API 同时驱动 Claude Co
 ![CI](https://github.com/tgcz2011/aiclibridge/actions/workflows/ci.yml/badge.svg)
 ![Go](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue)
-![Release](https://img.shields.io/badge/release-v0.4.1-blue)
+![Release](https://img.shields.io/badge/release-v0.5.0-blue)
 
 ## 核心特性
 
+- **一键安装**:`curl -fsSL ... | sh`(macOS/Linux)和 `irm ... | iex`(Windows)一行装好,自动探测 GOOS/GOARCH、下载 sha256 校验、装到 `/usr/local/bin` 或 `$HOME\bin`(免管理员);详见 [scripts/install.sh](scripts/install.sh) / [scripts/install.ps1](scripts/install.ps1)
+- **自动更新检测**:`aiclibridge update check` 查 GitHub releases,有新版则打印升级提示;`--json` 机器可读、`--quiet` 静默;daemon 启动时异步检查并在日志里打一行 hint,网络/限流失败一律静默
 - **三套接口**:OpenAI 兼容 `/v1/chat/completions` + `/v1/models`、Anthropic 兼容 `/v1/messages`、原生 `/v1/runs` SSE 流
 - **token / 价格统计**:`/v1/stats/usage`、`/v1/stats/prices`、`/v1/stats/summary` 三端点,per-model token 用量 + USD 估算
 - **并发上限 + 排队**:`max_concurrent_runs`(默认 8)+ `queue_timeout_ms`(默认 60s)信号量,超出排队等待,超时返回 `503 + Retry-After: 5`;`/v1/stats/concurrency` 实时查询 active/queued
@@ -36,15 +38,35 @@ AICLIBridge 是一个统一 AI CLI 桥:用一个 HTTP API 同时驱动 Claude Co
 | 一个 CLI 崩了拖垮整批 | 单 CLI 故障隔离,panic 转 500,daemon 不挂 |
 | 并发一高就 OOM / 拖垮机器 | 可配置并发上限 + 排队,超时 503 + Retry-After |
 | pprof / 权限 mode 等安全细节疏漏 | 非 loopback pprof 自动加 auth,permission_mode 可配 |
+| 安装/升级麻烦,要装 Go 或手动下二进制 | 一行 `curl\|sh` / `irm\|iex` 装好,`aiclibridge update check` 检测新版本 |
 | 多工具要装一堆依赖 | 单静态二进制,无 CGO |
 
 ## 快速开始
 
-```sh
-# 1. 安装
-go install github.com/tgcz2011/aiclibridge/cmd/aiclibridge@latest
+### 一键安装(macOS / Linux)
 
-# 2. 最小配置(也可零配置启动)
+```sh
+curl -fsSL https://github.com/tgcz2011/aiclibridge/raw/main/scripts/install.sh | sh
+```
+
+### 一键安装(Windows,PowerShell)
+
+```powershell
+irm https://github.com/tgcz2011/aiclibridge/raw/main/scripts/install.ps1 | iex
+```
+
+脚本自动探测 GOOS/GOARCH(darwin/linux × amd64/arm64、windows-amd64)、下载对应 tarball/zip、`sha256` 校验、装到 `/usr/local/bin`(不可写则 fallback `~/.local/bin`,Windows 装 `$env:USERPROFILE\bin`)。可选 `--bin` / `--version` / `--force`,详见 `scripts/install.sh -h`。
+
+### 从源码安装
+
+```sh
+go install github.com/tgcz2011/aiclibridge/cmd/aiclibridge@latest
+```
+
+### 配置 + 启动
+
+```sh
+# 最小配置(也可零配置启动)
 cat > aiclibridge.yaml <<'EOF'
 listen: 127.0.0.1:8787
 api_key: sk-aiclibridge-xxx
@@ -53,13 +75,25 @@ agents:
   codex:  { enabled: true }
 EOF
 
-# 3. 启动
+# 启动(前台)
 aiclibridge --config ./aiclibridge.yaml
+# 或后台 daemon
+aiclibridge start --config ./aiclibridge.yaml
 
-# 4. 验证
+# 验证
 curl -s http://127.0.0.1:8787/healthz
 curl -s -H "Authorization: Bearer sk-aiclibridge-xxx" http://127.0.0.1:8787/v1/models
 ```
+
+### 检查更新
+
+```sh
+aiclibridge update check             # 打印升级提示(best-effort,失败 exit 0)
+aiclibridge update check --json      # 机器可读输出
+aiclibridge update check --quiet     # 无更新时静默
+```
+
+daemon 启动时也会异步检查一次,有新版本则在日志里打一行 hint。
 
 ## 支持的 CLI 矩阵
 

@@ -534,7 +534,7 @@ func TestPrintUsageSmoke(t *testing.T) {
 	var buf bytes.Buffer
 	printUsage(&buf)
 	out := buf.String()
-	for _, cmd := range []string{"serve", "start", "stop", "restart", "upgrade", "run", "agents", "models", "cancel", "get", "version"} {
+	for _, cmd := range []string{"serve", "start", "stop", "restart", "upgrade", "update", "run", "agents", "models", "cancel", "get", "version"} {
 		if !strings.Contains(out, cmd) {
 			t.Errorf("printUsage: output missing subcommand %q", cmd)
 		}
