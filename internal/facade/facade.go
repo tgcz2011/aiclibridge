@@ -52,11 +52,12 @@ import (
 	"github.com/tgcz2011/aiclibridge/pkg/protocol"
 )
 
-// eventsChanBuffer caps the live event stream per run. Matches the adapter's
-// own Message channel buffer so a fast adapter and a slow SSE consumer do not
-// force unbounded buffering in the daemon. When full, intermediate events are
-// dropped from the live stream (the store still receives them for replay).
-const eventsChanBuffer = 256
+// eventsChanBuffer caps the live event stream per run. v0.3 raises this
+// from 256 to 1024 so a fast adapter (e.g. claude streaming a long file)
+// paired with a momentarily slow SSE consumer (e.g. a proxy buffering)
+// does not drop intermediate events from the live stream. The store
+// still receives every event for replay regardless of buffer state.
+const eventsChanBuffer = 1024
 
 // resultWaitTimeout bounds how long the forwarder waits for the adapter to
 // deliver its single Result value after the Messages channel closes. A
@@ -286,7 +287,7 @@ func (f *Facade) StartRun(ctx context.Context, req RunRequest) (*RunHandle, erro
 	session, err := f.safeExecute(runCtx, cliName, backend, req.Prompt, opts)
 	if err != nil {
 		cancel()
-		f.finishRun(storeCtx, runID, "failed", "", err.Error())
+		f.finishRun(storeCtx, runID, "failed", "", err.Error(), "")
 		return nil, err
 	}
 
@@ -361,6 +362,14 @@ func (f *Facade) GetRun(ctx context.Context, id string) (*RunResult, error) {
 	}
 
 	return result, nil
+}
+
+// GetUsageStats aggregates token usage across runs in the [since, until]
+// unix-second window. It is the thin store passthrough backing the
+// /v1/stats/usage and /v1/stats/summary endpoints; the api layer prices
+// the rows using the catalog → provider mapping and the pricing table.
+func (f *Facade) GetUsageStats(ctx context.Context, since, until int64) ([]store.UsageStatRow, error) {
+	return f.store.GetUsageStats(ctx, since, until)
 }
 
 // CancelRun cancels a live run by ID. It returns an error if the run is not
@@ -603,7 +612,7 @@ func (f *Facade) forwardEvents(
 							"run_id", runID)
 					}
 					f.finishRun(storeCtx, runID, "failed", "",
-						fmt.Sprintf("facade internal error: %v", r))
+						fmt.Sprintf("facade internal error: %v", r), "")
 				}
 			}()
 		}
@@ -649,8 +658,10 @@ func (f *Facade) forwardEvents(
 			"run_id", runID, "timeout", terminalSendTimeout)
 	}
 
-	// 4. Finalise store.
-	f.finishRun(storeCtx, runID, status, res.SessionID, res.Error)
+	// 4. Finalise store. Persist the terminal result event's usage so the
+	// stats API can price the run without re-reading the event timeline.
+	f.finishRun(storeCtx, runID, status, res.SessionID, res.Error,
+		marshalUsage(terminalEv.Result.Usage))
 	f.saveSession(storeCtx, runID, cliName, res.SessionID)
 	terminalSent = true
 }
@@ -671,10 +682,13 @@ func (f *Facade) appendEvent(ctx context.Context, runID string, ev protocol.Even
 	}
 }
 
-// finishRun marks the run complete in the store. Failures are logged and
+// finishRun marks the run complete in the store, persisting the terminal
+// result event's usage (serialised as JSON) so the stats API can price
+// the run without re-reading the event timeline. Failures are logged and
 // swallowed (the run is already done from the adapter's perspective).
-func (f *Facade) finishRun(ctx context.Context, runID, status, sessionID, errMsg string) {
-	if err := f.store.FinishRun(ctx, runID, status, sessionID, errMsg); err != nil {
+// usageJSON may be empty (e.g. a failed run with no usage).
+func (f *Facade) finishRun(ctx context.Context, runID, status, sessionID, errMsg, usageJSON string) {
+	if err := f.store.FinishRunWithUsage(ctx, runID, status, sessionID, errMsg, usageJSON); err != nil {
 		f.logger.Warn("facade: finish run in store",
 			"run_id", runID, "status", status, "error", err)
 	}
@@ -781,6 +795,21 @@ func convertUsage(in map[string]adapter.TokenUsage) map[string]protocol.TokenUsa
 		}
 	}
 	return out
+}
+
+// marshalUsage serialises the terminal result event's usage map to JSON
+// for store persistence. An empty/nil map yields "" so the store column
+// keeps its DEFAULT ''. A marshal failure (should not happen for the
+// protocol's own type) also yields "" rather than blocking finalisation.
+func marshalUsage(usage map[string]protocol.TokenUsagePayload) string {
+	if len(usage) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(usage)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }
 
 // normalizeStatus maps adapter status strings to the protocol's canonical

@@ -21,11 +21,13 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/http/pprof"
 	"strings"
 
 	"github.com/tgcz2011/aiclibridge/internal/config"
 	"github.com/tgcz2011/aiclibridge/internal/detect"
 	facadepkg "github.com/tgcz2011/aiclibridge/internal/facade"
+	"github.com/tgcz2011/aiclibridge/internal/store"
 	"github.com/tgcz2011/aiclibridge/pkg/protocol"
 )
 
@@ -39,6 +41,9 @@ type facade interface {
 	CancelRun(ctx context.Context, id string) error
 	ListAgents(ctx context.Context) ([]detect.CLIInfo, error)
 	ListProviders(ctx context.Context, cli string) ([]detect.ProviderInfo, error)
+	// GetUsageStats backs the /v1/stats endpoints. It is a thin store
+	// passthrough; the api layer prices the rows via the pricing table.
+	GetUsageStats(ctx context.Context, since, until int64) ([]store.UsageStatRow, error)
 }
 
 // Server is the HTTP API server. It is safe for concurrent use: the mux is
@@ -121,6 +126,21 @@ func (s *Server) registerRoutes() {
 	s.mux.Handle("GET /v1/anthropic/models", s.chain(s.handleAnthropicModels, true))
 	s.mux.Handle("POST /v1/messages", s.chain(s.handleAnthropicMessages, true))
 	s.mux.Handle("POST /v1/messages/{id}/cancel", s.chain(s.handleAnthropicCancel, true))
+
+	// Stats: token usage aggregation, pricing table, and cost summary.
+	// All authed — usage data is operational, not for unauthenticated
+	// enumeration.
+	s.mux.Handle("GET /v1/stats/usage", s.chain(s.handleStatsUsage, true))
+	s.mux.Handle("GET /v1/stats/prices", s.chain(s.handleStatsPrices, true))
+	s.mux.Handle("GET /v1/stats/summary", s.chain(s.handleStatsSummary, true))
+
+	// pprof debug endpoints. Unauthenticated — the daemon listens on
+	// loopback by default so this is safe; if you bind to a public
+	// interface, put the daemon behind an authenticating reverse proxy.
+	// These endpoints let operators diagnose high-concurrency behaviour
+	// (goroutine leaks, heap growth, mutex contention) without restarting.
+	s.mux.Handle("GET /debug/pprof/", s.chain(http.HandlerFunc(pprof.Index), false))
+	s.mux.Handle("GET /debug/pprof/{path}", s.chain(http.HandlerFunc(pprof.Index), false))
 }
 
 // chain wraps a handler in the standard middleware stack. requireAuth

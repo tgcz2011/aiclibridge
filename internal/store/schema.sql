@@ -13,8 +13,19 @@ CREATE TABLE IF NOT EXISTS runs (
     finished_at     INTEGER,
     cwd             TEXT NOT NULL DEFAULT '',
     cli_session_id  TEXT NOT NULL DEFAULT '',
-    error           TEXT NOT NULL DEFAULT ''
+    error           TEXT NOT NULL DEFAULT '',
+    -- v0.3: per-run token usage serialised as JSON
+    -- ({"model_name":{"input_tokens":N,...}}). Populated by FinishRunWithUsage
+    -- from the terminal result event. Empty string until the run finishes.
+    usage_json      TEXT NOT NULL DEFAULT ''
 );
+
+-- v0.3: add usage_json column to runs for stats aggregation.
+-- DDL is idempotent: re-running is a no-op once the column exists. The
+-- CREATE TABLE above installs the column on fresh DBs; the runtime
+-- migration in store.Open adds it to pre-v0.3 DBs via ALTER TABLE
+-- (guarded by a pragma_table_info check, since ALTER TABLE ADD COLUMN
+-- has no IF NOT EXISTS form in SQLite).
 
 -- events: per-run timeline. payload_json is the SSE event JSON
 -- (the data line) so ListEvents can be piped straight back to

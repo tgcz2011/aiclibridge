@@ -114,6 +114,88 @@ func TestCollectPromptCharDevice(t *testing.T) {
 
 // ── exitCodeForStatus ──
 
+// TestSplitCustomArgs covers the "--" separator splitting for `run`.
+// The separator must be standalone (not a flag value), the tail must be
+// returned verbatim (including flag-like tokens), and absence of "--"
+// returns the input unchanged with nil customArgs.
+func TestSplitCustomArgs(t *testing.T) {
+	tests := []struct {
+		name        string
+		args        []string
+		wantFlag    []string
+		wantCustom  []string
+	}{
+		{
+			name:       "no_separator",
+			args:       []string{"--model", "x", "prompt"},
+			wantFlag:   []string{"--model", "x", "prompt"},
+			wantCustom: nil,
+		},
+		{
+			name:       "simple",
+			args:       []string{"--model", "x", "prompt", "--", "--pure"},
+			wantFlag:   []string{"--model", "x", "prompt"},
+			wantCustom: []string{"--pure"},
+		},
+		{
+			name:       "multiple_custom_args",
+			args:       []string{"prompt", "--", "--pure", "--debug", "value"},
+			wantFlag:   []string{"prompt"},
+			wantCustom: []string{"--pure", "--debug", "value"},
+		},
+		{
+			name:       "separator_only",
+			args:       []string{"--"},
+			wantFlag:   []string{},
+			wantCustom: []string{},
+		},
+		{
+			name:       "separator_first",
+			args:       []string{"--", "--pure"},
+			wantFlag:   []string{},
+			wantCustom: []string{"--pure"},
+		},
+		{
+			name:       "empty_after_separator",
+			args:       []string{"prompt", "--"},
+			wantFlag:   []string{"prompt"},
+			wantCustom: []string{},
+		},
+		{
+			name:       "double_dash_inside_value_not_split",
+			args:       []string{"--model", "a--b", "prompt"},
+			wantFlag:   []string{"--model", "a--b", "prompt"},
+			wantCustom: nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotFlag, gotCustom := splitCustomArgs(tt.args)
+			if !equalStrSlices(gotFlag, tt.wantFlag) {
+				t.Errorf("flag args: got %#v, want %#v", gotFlag, tt.wantFlag)
+			}
+			if !equalStrSlices(gotCustom, tt.wantCustom) {
+				t.Errorf("custom args: got %#v, want %#v", gotCustom, tt.wantCustom)
+			}
+		})
+	}
+}
+
+// equalStrSlices compares two string slices, treating nil and empty as
+// equal (splitCustomArgs returns nil for "no custom args" and []string{}
+// for "separator with nothing after" — both are zero-length).
+func equalStrSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // TestExitCodeForStatus is a table test covering every documented
 // status plus the unknown fallback. The expected codes follow the
 // shell conventions documented on exitCodeForStatus: 0/1/130/124.
@@ -452,7 +534,7 @@ func TestPrintUsageSmoke(t *testing.T) {
 	var buf bytes.Buffer
 	printUsage(&buf)
 	out := buf.String()
-	for _, cmd := range []string{"serve", "run", "agents", "models", "cancel", "get", "version"} {
+	for _, cmd := range []string{"serve", "start", "stop", "restart", "upgrade", "run", "agents", "models", "cancel", "get", "version"} {
 		if !strings.Contains(out, cmd) {
 			t.Errorf("printUsage: output missing subcommand %q", cmd)
 		}

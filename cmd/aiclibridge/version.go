@@ -21,7 +21,10 @@ import (
 //   - v0.2.0: extends to 19 CLIs from AionUi's ACP catalogue — adds
 //     codebuddy (stream-json), copilot/goose/cursor/kimi/kiro/qoder/
 //     hermes/auggie (ACP JSON-RPC), and droid/snow/vibe/aion (stubs).
-const Version = "0.2.0"
+//   - v0.3.0: token/price stats API, high-concurrency SQLite (WAL +
+//     connection pool), background daemon (start/stop/restart/upgrade),
+//     per-request custom_args forwarding (e.g. `run -- --pure`).
+const Version = "0.3.0"
 
 // Build and Commit are populated by -ldflags at link time
 // (`-X main.Build=... -X main.Commit=...`). They stay empty for local

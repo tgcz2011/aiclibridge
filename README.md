@@ -5,11 +5,15 @@ AICLIBridge 是一个统一 AI CLI 桥:用一个 HTTP API 同时驱动 Claude Co
 ![CI](https://github.com/tgcz2011/aiclibridge/actions/workflows/ci.yml/badge.svg)
 ![Go](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue)
-![Release](https://img.shields.io/badge/release-v0.2.0-blue)
+![Release](https://img.shields.io/badge/release-v0.3.0-blue)
 
 ## 核心特性
 
 - **三套接口**:OpenAI 兼容 `/v1/chat/completions` + `/v1/models`、Anthropic 兼容 `/v1/messages`、原生 `/v1/runs` SSE 流
+- **token / 价格统计**:`/v1/stats/usage`、`/v1/stats/prices`、`/v1/stats/summary` 三端点,per-model token 用量 + USD 估算
+- **高并发优化**:SQLite WAL 模式 + 连接池(max(4, NumCPU))+ busy_timeout,事件缓冲 256→1024
+- **后台 daemon**:`start` / `stop` / `restart` / `upgrade` 子命令,fork 脱离终端,固定端口,PID 文件管理
+- **per-request 传参**:`run -- --pure` 用 `--` 分隔符向底层 CLI 透传 flag(如禁用 opencode plugin)
 - **六 CLI 统一**:claude / codex / opencode / openclaw / qwen / gemini,model name 形如 `claude/anthropic/claude-sonnet-4.5`
 - **强容错**:panic recover、超时降级、单 CLI 故障隔离、store 失败不致命、客户端断连自动取消 run
 - **不限并发**:每个 run 独立 goroutine,`sync.Map` 跟踪 live runs,SSE 长连接不设读写超时
@@ -120,7 +124,7 @@ Stub 适配器返回 `ErrNotImplemented`，在 `/v1/agents` 标记为 `available
 - [快速开始](docs/quickstart.md) — 5 分钟接入,含 SDK 示例
 - [配置参考](docs/configuration.md) — 字段表、env 覆盖、完整示例
 - [API 参考](docs/api.md) — 所有端点、请求/响应、SSE 事件 schema
-- [CLI 子命令](docs/cli.md) — serve / run / agents / models / cancel / get
+- [CLI 子命令](docs/cli.md) — serve / start / stop / restart / upgrade / run / agents / models / cancel / get
 - [架构设计](docs/architecture.md) — 分层、并发模型、容错、扩展指南
 - 示例:[openai-python](examples/openai-python.py) · [anthropic-python](examples/anthropic-python.py) · [curl](examples/curl.sh) · [完整配置](examples/config-full.yaml)
 

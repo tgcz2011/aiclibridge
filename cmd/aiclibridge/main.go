@@ -41,6 +41,14 @@ func main() {
 	switch cmd {
 	case "serve":
 		code = runServe(rest)
+	case "start":
+		code = runStart(rest)
+	case "stop":
+		code = runStop(rest)
+	case "restart":
+		code = runRestart(rest)
+	case "upgrade":
+		code = runUpgrade(rest)
 	case "run":
 		code = runRun(rest)
 	case "agents":

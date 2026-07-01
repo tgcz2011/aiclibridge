@@ -324,6 +324,14 @@ func runServe(args []string) int {
 // emits a terminal cancelled result so the stream loop unblocks
 // cleanly rather than wedging on a dead adapter.
 func runRun(args []string) int {
+	// Split at the first standalone "--": everything after is passed
+	// verbatim to the underlying CLI as CustomArgs (e.g. opencode's
+	// --pure to disable plugins). Go's flag package treats "--" as a
+	// terminator but folds the tail into positional args, which would
+	// pollute the prompt — so we split first and parse flags only from
+	// the head.
+	flagArgs, customArgs := splitCustomArgs(args)
+
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	configPath := fs.String("config", "", "path to config file (default: search order)")
 	model := fs.String("model", "", "CLI/provider/model routing key (default: first enabled agent)")
@@ -333,7 +341,7 @@ func runRun(args []string) int {
 	timeoutDur := fs.Duration("timeout", 0, "hard wall-clock timeout (e.g. 30s, 2m; 0 = none)")
 	resume := fs.String("resume", "", "session id to resume")
 	noStream := fs.Bool("no-stream", false, "disable live streaming; print aggregated output at the end")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(flagArgs); err != nil {
 		if err == flag.ErrHelp {
 			return 0
 		}
@@ -358,12 +366,13 @@ func runRun(args []string) int {
 	defer c.close()
 
 	req := facade.RunRequest{
-		Model:            *model,
-		Prompt:           prompt,
-		Cwd:              *cwd,
-		SystemPrompt:     *systemPrompt,
-		MaxTurns:         *maxTurns,
-		ResumeSessionID:  *resume,
+		Model:           *model,
+		Prompt:          prompt,
+		Cwd:             *cwd,
+		SystemPrompt:    *systemPrompt,
+		MaxTurns:        *maxTurns,
+		ResumeSessionID: *resume,
+		CustomArgs:      customArgs,
 		// Stream=true so we own the Events drain; the live-vs-aggregate
 		// decision is made below by which consumer we attach.
 		Stream: true,
@@ -645,6 +654,23 @@ func runVersion(args []string) int {
 // pulling in golang.org/x/term or mattn/go-isatty: both would work,
 // but ModeCharDevice is stdlib-only and sufficient for the "is there a
 // pipe here?" decision the CLI needs to make.
+
+// splitCustomArgs separates args at the first standalone "--" into flag
+// args (before) and custom CLI args (after). The "--" itself is consumed.
+// Returns the original args unchanged (with nil customArgs) if no "--" is
+// present. This lets `run` forward extra flags to the underlying CLI,
+// e.g. `aiclibridge run --model opencode/... "fix bug" -- --pure` passes
+// "--pure" to opencode. A "--" that appears as the very first token is
+// legal: flagArgs is empty and the prompt is read from stdin.
+func splitCustomArgs(args []string) (flagArgs, customArgs []string) {
+	for i, a := range args {
+		if a == "--" {
+			return args[:i], args[i+1:]
+		}
+	}
+	return args, nil
+}
+
 func collectPrompt(positional []string) (string, error) {
 	if len(positional) > 0 {
 		return strings.Join(positional, " "), nil

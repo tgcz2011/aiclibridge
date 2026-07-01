@@ -14,6 +14,7 @@ import (
 	"github.com/tgcz2011/aiclibridge/internal/config"
 	"github.com/tgcz2011/aiclibridge/internal/detect"
 	facadepkg "github.com/tgcz2011/aiclibridge/internal/facade"
+	"github.com/tgcz2011/aiclibridge/internal/store"
 	"github.com/tgcz2011/aiclibridge/pkg/protocol"
 )
 
@@ -36,6 +37,10 @@ type fakeFacade struct {
 	cancelErr   error
 	listErr     error
 	panicOnStart bool
+
+	// statsRows/statsErr back GetUsageStats for the /v1/stats handlers.
+	statsRows []store.UsageStatRow
+	statsErr  error
 
 	idCounter int
 	started   []facadepkg.RunRequest
@@ -148,6 +153,16 @@ func (f *fakeFacade) ListProviders(ctx context.Context, cli string) ([]detect.Pr
 		}
 	}
 	return nil, errNotFound(cli)
+}
+
+// GetUsageStats returns the preconfigured rows for the stats handlers.
+// The store aggregation itself is exercised in store_test.go; here we
+// feed the handler shaped rows so the cost computation and JSON shaping
+// are tested independently.
+func (f *fakeFacade) GetUsageStats(ctx context.Context, since, until int64) ([]store.UsageStatRow, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.statsRows, f.statsErr
 }
 
 // ── Test helpers ──

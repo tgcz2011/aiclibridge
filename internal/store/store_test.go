@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"testing"
+	"time"
 )
 
 // TestReplay proves the store can persist a mixed-type event stream for a
@@ -122,5 +123,184 @@ func TestSessionRoundTrip(t *testing.T) {
 	}
 	if got.CreatedAt == 0 {
 		t.Error("CreatedAt should be non-zero")
+	}
+}
+
+// TestFinishRunWithUsage verifies the v0.3 usage-persisting finish path:
+// FinishRunWithUsage stores usage_json on the run row, and GetRun reads
+// it back verbatim. An empty usageJSON (failed run) keeps the column at
+// its DEFAULT ''. This is the storage half of the stats pipeline; the
+// facade forwards the terminal result event's usage through this method.
+func TestFinishRunWithUsage(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	ctx := context.Background()
+	if err := s.CreateRun(ctx, "ru1", "claude", "claude-sonnet-4.5", "/tmp"); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+
+	usageJSON := `{"claude-sonnet-4.5":{"input_tokens":100,"output_tokens":50,"cache_read_tokens":10,"cache_write_tokens":5}}`
+	if err := s.FinishRunWithUsage(ctx, "ru1", "completed", "sess-1", "", usageJSON); err != nil {
+		t.Fatalf("FinishRunWithUsage: %v", err)
+	}
+
+	run, err := s.GetRun(ctx, "ru1")
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if run.UsageJSON != usageJSON {
+		t.Errorf("UsageJSON:\n got  %q\n want %q", run.UsageJSON, usageJSON)
+	}
+	if run.Status != "completed" {
+		t.Errorf("Status: got %q, want completed", run.Status)
+	}
+
+	// Empty usage (a failed run) persists as "" and round-trips.
+	if err := s.CreateRun(ctx, "ru2", "codex", "gpt-5", "/tmp"); err != nil {
+		t.Fatalf("CreateRun ru2: %v", err)
+	}
+	if err := s.FinishRunWithUsage(ctx, "ru2", "failed", "", "boom", ""); err != nil {
+		t.Fatalf("FinishRunWithUsage ru2: %v", err)
+	}
+	run2, err := s.GetRun(ctx, "ru2")
+	if err != nil {
+		t.Fatalf("GetRun ru2: %v", err)
+	}
+	if run2.UsageJSON != "" {
+		t.Errorf("empty UsageJSON: got %q, want \"\"", run2.UsageJSON)
+	}
+	if run2.Error != "boom" {
+		t.Errorf("Error: got %q, want boom", run2.Error)
+	}
+}
+
+// TestGetUsageStats verifies the stats aggregation: runs in the time
+// window are grouped by (adapter, model, status) and each run's
+// usage_json is parsed and summed into the bucket. A wide window covers
+// the just-inserted rows. Two claude/claude-sonnet-4.5/completed runs
+// land in one bucket (tokens summed, run_count=2); a codex run lands in
+// another. Malformed usage_json is skipped without breaking the query.
+func TestGetUsageStats(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	ctx := context.Background()
+
+	// Two completed claude runs using the same model — should aggregate
+	// into one bucket with summed tokens and run_count=2.
+	if err := s.CreateRun(ctx, "s1", "claude", "claude-sonnet-4.5", "/tmp"); err != nil {
+		t.Fatalf("CreateRun s1: %v", err)
+	}
+	if err := s.FinishRunWithUsage(ctx, "s1", "completed", "", "",
+		`{"claude-sonnet-4.5":{"input_tokens":100,"output_tokens":50}}`); err != nil {
+		t.Fatalf("FinishRunWithUsage s1: %v", err)
+	}
+	if err := s.CreateRun(ctx, "s2", "claude", "claude-sonnet-4.5", "/tmp"); err != nil {
+		t.Fatalf("CreateRun s2: %v", err)
+	}
+	if err := s.FinishRunWithUsage(ctx, "s2", "completed", "", "",
+		`{"claude-sonnet-4.5":{"input_tokens":200,"output_tokens":150,"cache_read_tokens":20}}`); err != nil {
+		t.Fatalf("FinishRunWithUsage s2: %v", err)
+	}
+
+	// A codex run in a separate bucket.
+	if err := s.CreateRun(ctx, "s3", "codex", "gpt-5", "/tmp"); err != nil {
+		t.Fatalf("CreateRun s3: %v", err)
+	}
+	if err := s.FinishRunWithUsage(ctx, "s3", "completed", "", "",
+		`{"gpt-5":{"input_tokens":1000,"output_tokens":500}}`); err != nil {
+		t.Fatalf("FinishRunWithUsage s3: %v", err)
+	}
+
+	// A run with malformed usage_json — must be skipped, not abort.
+	if err := s.CreateRun(ctx, "s4", "claude", "claude-haiku-4.5", "/tmp"); err != nil {
+		t.Fatalf("CreateRun s4: %v", err)
+	}
+	if err := s.FinishRunWithUsage(ctx, "s4", "completed", "", "",
+		`{not-json`); err != nil {
+		t.Fatalf("FinishRunWithUsage s4: %v", err)
+	}
+
+	// Wide window covers all rows (started_at = time.Now()).
+	rows, err := s.GetUsageStats(ctx, 0, time.Now().Unix()+60)
+	if err != nil {
+		t.Fatalf("GetUsageStats: %v", err)
+	}
+
+	// Find the claude/claude-sonnet-4.5/completed bucket.
+	var claudeBucket *UsageStatRow
+	for i := range rows {
+		if rows[i].Adapter == "claude" && rows[i].Model == "claude-sonnet-4.5" && rows[i].Status == "completed" {
+			claudeBucket = &rows[i]
+			break
+		}
+	}
+	if claudeBucket == nil {
+		t.Fatalf("claude/sonnet bucket missing from %v", rows)
+	}
+	if claudeBucket.RunCount != 2 {
+		t.Errorf("RunCount: got %d, want 2", claudeBucket.RunCount)
+	}
+	if claudeBucket.InputTokens != 300 {
+		t.Errorf("InputTokens: got %d, want 300", claudeBucket.InputTokens)
+	}
+	if claudeBucket.OutputTokens != 200 {
+		t.Errorf("OutputTokens: got %d, want 200", claudeBucket.OutputTokens)
+	}
+	if claudeBucket.CacheReadTokens != 20 {
+		t.Errorf("CacheReadTokens: got %d, want 20", claudeBucket.CacheReadTokens)
+	}
+
+	// The malformed-usage run (s4) still counts as a run but contributes
+	// zero tokens.
+	var haikuBucket *UsageStatRow
+	for i := range rows {
+		if rows[i].Adapter == "claude" && rows[i].Model == "claude-haiku-4.5" {
+			haikuBucket = &rows[i]
+			break
+		}
+	}
+	if haikuBucket == nil {
+		t.Fatalf("claude/haiku bucket missing from %v", rows)
+	}
+	if haikuBucket.RunCount != 1 {
+		t.Errorf("haiku RunCount: got %d, want 1", haikuBucket.RunCount)
+	}
+	if haikuBucket.InputTokens != 0 {
+		t.Errorf("haiku InputTokens: got %d, want 0 (malformed usage skipped)", haikuBucket.InputTokens)
+	}
+
+	// The codex bucket.
+	var codexBucket *UsageStatRow
+	for i := range rows {
+		if rows[i].Adapter == "codex" {
+			codexBucket = &rows[i]
+			break
+		}
+	}
+	if codexBucket == nil {
+		t.Fatalf("codex bucket missing from %v", rows)
+	}
+	if codexBucket.RunCount != 1 {
+		t.Errorf("codex RunCount: got %d, want 1", codexBucket.RunCount)
+	}
+	if codexBucket.InputTokens != 1000 {
+		t.Errorf("codex InputTokens: got %d, want 1000", codexBucket.InputTokens)
+	}
+
+	// A window excluding all rows returns empty.
+	empty, err := s.GetUsageStats(ctx, time.Now().Unix()+3600, time.Now().Unix()+7200)
+	if err != nil {
+		t.Fatalf("GetUsageStats future window: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Errorf("future window: got %d rows, want 0", len(empty))
 	}
 }

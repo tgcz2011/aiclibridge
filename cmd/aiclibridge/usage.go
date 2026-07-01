@@ -33,7 +33,11 @@ Usage:
   aiclibridge <command> [flags] [args]
 
 Commands:
-  serve    Start the HTTP daemon (the original main.go behaviour).
+  serve    Start the HTTP daemon in the foreground (original behaviour).
+  start    Start the HTTP daemon in the background; survives terminal close.
+  stop     Stop the background daemon (reads pid file, SIGTERM then SIGKILL).
+  restart  Stop then start the background daemon.
+  upgrade  Self-update via 'go install' then restart the daemon.
   run      Run a single prompt against a CLI without a long-lived daemon.
   agents   List detected CLIs and their providers/models (local detect).
   models   List every CLI/provider/model routing key (local detect).
@@ -48,8 +52,11 @@ Top-level flags:
 Quick reference:
   aiclibridge run --model claude/anthropic/claude-sonnet-4.5 "fix the bug"
   echo "refactor this" | aiclibridge run --model codex/openai/gpt-5
+  aiclibridge run --model opencode/openai/gpt-5 "fix bug" -- --pure   # pass --pure to opencode
   aiclibridge agents
-  aiclibridge serve --listen 127.0.0.1:8787
+  aiclibridge start                          # background daemon on 127.0.0.1:8787
+  aiclibridge stop                           # stop the background daemon
+  aiclibridge serve --listen 127.0.0.1:8787  # foreground daemon
 
 Run 'aiclibridge <command> -h' for command-specific flags.
 `)
