@@ -30,7 +30,10 @@ import (
 //     migration framework (schema_migrations), CLI version-check helpers,
 //     bounded in-memory event slice for non-streaming responses, pricing
 //     sort.Slice, daemon/server init de-duplication.
-const Version = "0.4.0"
+//   - v0.4.1: release workflow now ships a Windows amd64 binary
+//     (aiclibridge-windows-amd64.zip) alongside the darwin/linux tarballs;
+//     no code changes from v0.4.0.
+const Version = "0.4.1"
 
 // Build and Commit are populated by -ldflags at link time
 // (`-X main.Build=... -X main.Commit=...`). They stay empty for local

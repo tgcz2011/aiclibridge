@@ -21,12 +21,22 @@ jobs:
         include:
           - goos: darwin
             goarch: amd64
+            archive: tar.gz
           - goos: darwin
             goarch: arm64
+            archive: tar.gz
           - goos: linux
             goarch: amd64
+            archive: tar.gz
           - goos: linux
             goarch: arm64
+            archive: tar.gz
+          # Windows: best-effort daemon support (no graceful SIGTERM;
+          # see cmd/aiclibridge/daemon_windows.go). Packaged as .zip
+          # since Windows users expect Expand-Archive, not tar.
+          - goos: windows
+            goarch: amd64
+            archive: zip
     steps:
       - name: checkout
         uses: actions/checkout@v4
@@ -45,9 +55,18 @@ jobs:
         run: |
           set -e
           bin="aiclibridge-${{ matrix.goos }}-${{ matrix.goarch }}"
+          # Windows expects an .exe extension on the binary inside the
+          # archive so users can invoke it directly after unzipping.
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            bin="${bin}.exe"
+          fi
           go build -trimpath -ldflags "-s -w -X github.com/tgcz2011/aiclibridge/cmd/aiclibridge.Commit=${GITHUB_SHA::7} -X github.com/tgcz2011/aiclibridge/cmd/aiclibridge.Build=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o "$bin" ./cmd/aiclibridge
-          archive="${bin}.tar.gz"
-          tar -czf "$archive" "$bin"
+          archive="aiclibridge-${{ matrix.goos }}-${{ matrix.goarch }}.${{ matrix.archive }}"
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            zip -q "$archive" "$bin"
+          else
+            tar -czf "$archive" "$bin"
+          fi
           shasum -a 256 "$archive" > "${archive}.sha256"
           echo "ASSET=${archive}" >> "$GITHUB_ENV"
           echo "ASSET_SHA256=${archive}.sha256" >> "$GITHUB_ENV"
@@ -59,6 +78,8 @@ jobs:
           path: |
             aiclibridge-*.tar.gz
             aiclibridge-*.tar.gz.sha256
+            aiclibridge-*.zip
+            aiclibridge-*.zip.sha256
           if-no-files-found: error
           retention-days: 7
 
@@ -91,6 +112,8 @@ jobs:
           files: |
             release-assets/aiclibridge-*.tar.gz
             release-assets/aiclibridge-*.tar.gz.sha256
+            release-assets/aiclibridge-*.zip
+            release-assets/aiclibridge-*.zip.sha256
           body: |
             ## AICLIBridge ${{ github.ref_name }}
 
@@ -98,7 +121,7 @@ jobs:
 
             ### 二进制安装
 
-            下载对应平台的 `aiclibridge-{os}-{arch}.tar.gz`，解压后放到 `PATH` 即可：
+            下载对应平台的 `aiclibridge-{os}-{arch}.tar.gz`（Windows 为 `.zip`），解压后放到 `PATH` 即可：
 
             ```sh
             # macOS (Apple Silicon)
@@ -112,6 +135,14 @@ jobs:
             tar -xzf aiclibridge.tar.gz
             sudo mv aiclibridge /usr/local/bin/
             aiclibridge version
+            ```
+
+            ```powershell
+            # Windows (x86_64, PowerShell)
+            Invoke-WebRequest -Uri "https://github.com/tgcz2011/aiclibridge/releases/download/${{ github.ref_name }}/aiclibridge-windows-amd64.zip" -OutFile "aiclibridge.zip"
+            Expand-Archive -Path "aiclibridge.zip" -DestinationPath "."
+            .\aiclibridge-windows-amd64.exe version
+            # 或移到 PATH 上的目录后直接 aiclibridge version
             ```
 
             校验完整性（可选）：
