@@ -75,7 +75,7 @@ import (
 //     validation, /v1/models auth-gated, .gitignore. Correctness: URL
 //     escape, sync.Once slot release, max_concurrent_runs=0 = unlimited,
 //     openclaw version check wired in, mustJSON no longer panics in SSE.
-const Version = "0.6.0"
+const Version = "0.6.1"
 
 // Build and Commit are populated by -ldflags at link time
 // (`-X main.Build=... -X main.Commit=...`). They stay empty for local

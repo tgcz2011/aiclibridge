@@ -49,6 +49,8 @@ func main() {
 		code = runRestart(rest)
 	case "upgrade":
 		code = runUpgrade(rest)
+	case "uninstall":
+		code = runUninstall(rest)
 	case "update":
 		code = runUpdate(rest)
 	case "run":

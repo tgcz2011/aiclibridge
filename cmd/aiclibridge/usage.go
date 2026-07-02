@@ -42,6 +42,8 @@ Commands:
            (Unix: full support; Windows: best-effort, no graceful SIGTERM.)
   upgrade  Self-update via 'go install' then restart the daemon.
            (Unix: full support; Windows: best-effort, no graceful SIGTERM.)
+  uninstall  Remove the aiclibridge binary. --purge also removes data dir
+             and config files. --yes/-y skips the confirmation prompt.
   update   Check GitHub for a newer release; prints a notice on stderr.
            Best-effort: network/rate-limit failures exit 0 so scripting
            is never blocked. Use 'update check --json' for machine output.
