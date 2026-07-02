@@ -1,18 +1,23 @@
 // Package adapter — codebuddy backend.
 //
 // codebuddyBackend implements Backend by spawning
-// `codebuddy --bare --output-format stream-json --input-format stream-json --yolo`
+// `codebuddy --print --output-format stream-json --input-format stream-json --dangerously-skip-permissions`
 // and driving a stream-json conversation over stdin/stdout. The prompt is
 // delivered as a single user-turn NDJSON frame on stdin; codebuddy emits
 // assistant / user / system / result / control_request events on stdout,
 // one JSON object per line.
 //
 // codebuddy (Tencent CodeBuddy CLI) and qwen-code share the same Claude
-// Code SDK lineage, and codebuddy --help (v2.113.0) exposes the identical
-// stream-json flag set as qwen (--output-format stream-json,
-// --input-format stream-json, --include-partial-messages, --yolo,
+// Code SDK lineage, but codebuddy --help (v2.114.1) diverges from qwen on
+// several flags. The shared stream-json surface is: --output-format
+// stream-json, --input-format stream-json, --include-partial-messages,
 // -c/--continue, -r/--resume [id], --session-id, --fork-session,
-// --mcp-config <file>, --strict-mcp-config, --model, --permission-mode).
+// --mcp-config <file>, --strict-mcp-config, --model, --permission-mode.
+// codebuddy-specific differences: non-interactive mode is --print/-p (NOT
+// --bare), permission bypass is -y/--dangerously-skip-permissions (NOT
+// --yolo), max turns is --max-turns (NOT --max-session-turns), and the
+// system prompt is --system-prompt / --system-prompt-file (NOT
+// --append-system-prompt).
 //
 // Schema note: ASSUMPTION, not yet verified against codebuddy source. The
 // stream-json output schema is assumed to be the same Claude Code SDK
@@ -48,26 +53,40 @@ import (
 //
 // codebuddyBlockedArgs are flags hardcoded by the daemon that must not be
 // overridden by user-configured custom_args. Overriding these would break
-// the daemon↔codebuddy stream-json protocol contract (NDJSON I/O, YOLO
-// autonomous mode, MCP injection, session id pinning, model selection,
-// system-prompt injection). Mirrors claudeBlockedArgs / qwenBlockedArgs —
-// same generic filterCustomArgs helper, codebuddy-specific set. The flag
-// set is identical to qwenBlockedArgs because codebuddy exposes the same
-// Claude Code SDK flag surface as qwen-code.
+// the daemon↔codebuddy stream-json protocol contract (NDJSON I/O,
+// autonomous permission bypass, MCP injection, session id pinning, model
+// selection, system-prompt injection). Mirrors claudeBlockedArgs /
+// qwenBlockedArgs — same generic filterCustomArgs helper,
+// codebuddy-specific set. The flag set is NOT identical to qwenBlockedArgs:
+// codebuddy (v2.114.1) uses --print/-p (not --bare),
+// -y/--dangerously-skip-permissions (not --yolo), --max-turns (not
+// --max-session-turns), --system-prompt (not --append-system-prompt), and
+// --permission-mode (not --approval-mode). The qwen-only flag names are
+// kept blocked as safety nets so a misconfigured agent copying qwen flags
+// cannot smuggle an unsupported flag through to codebuddy.
 var codebuddyBlockedArgs = map[string]blockedArgMode{
-	"--bare":                 blockedStandalone, // minimal mode, daemon-managed
-	"-p":                     blockedWithValue,  // deprecated non-interactive prompt flag (-p <text>)
-	"--prompt":               blockedWithValue,  // deprecated non-interactive prompt flag
-	"--output-format":        blockedWithValue,  // stream-json protocol
-	"--input-format":         blockedWithValue,  // stream-json protocol
-	"--yolo":                 blockedStandalone, // daemon manages autonomous approval
-	"--approval-mode":        blockedWithValue,  // owned by --yolo above
-	"--mcp-config":           blockedWithValue,  // set by daemon from agent.mcp_config
-	"--session-id":           blockedWithValue,  // daemon-managed session pinning
-	"-m":                     blockedWithValue,  // model is daemon-managed via opts.Model
-	"--model":                blockedWithValue,  // long form of -m
-	"--system-prompt":        blockedWithValue,  // daemon-managed system prompt injection
-	"--append-system-prompt": blockedWithValue,  // daemon-managed system prompt injection
+	"--print":                        blockedStandalone, // non-interactive mode, protocol-owned
+	"-p":                             blockedStandalone, // non-interactive mode, protocol-owned
+	"--output-format":                blockedWithValue,  // stream-json protocol
+	"--input-format":                 blockedWithValue,  // stream-json protocol
+	"-y":                             blockedStandalone, // daemon manages autonomous approval
+	"--dangerously-skip-permissions": blockedStandalone, // daemon manages autonomous approval
+	"--permission-mode":              blockedWithValue,  // owned by --dangerously-skip-permissions above
+	"--mcp-config":                   blockedWithValue,  // set by daemon from agent.mcp_config
+	"--session-id":                   blockedWithValue,  // daemon-managed session pinning
+	"--model":                        blockedWithValue,  // model is daemon-managed via opts.Model
+	"--max-turns":                    blockedWithValue,  // max turns is daemon-managed via opts.MaxTurns
+	"--system-prompt":                blockedWithValue,  // daemon-managed system prompt injection
+	// Safety nets: qwen-only flag names that codebuddy does NOT support.
+	// Kept blocked so a misconfigured agent cannot pass them through and
+	// hit a codebuddy "unknown option" error at runtime.
+	"--bare":                 blockedStandalone, // qwen-only; codebuddy has no --bare
+	"--prompt":               blockedWithValue,  // qwen-only; codebuddy uses --print/-p
+	"--yolo":                 blockedStandalone, // qwen-only; codebuddy uses -y/--dangerously-skip-permissions
+	"--approval-mode":        blockedWithValue,  // qwen-only; codebuddy uses --permission-mode
+	"-m":                     blockedWithValue,  // qwen-only; codebuddy uses --model
+	"--max-session-turns":    blockedWithValue,  // qwen-only; codebuddy uses --max-turns
+	"--append-system-prompt": blockedWithValue,  // qwen-only; codebuddy uses --system-prompt
 }
 
 // codebuddyBackend implements Backend by spawning the codebuddy CLI in
@@ -297,9 +316,9 @@ func (b *codebuddyBackend) processCodebuddyEvents(r io.Reader, ch chan<- Message
 
 		var event codebuddySDKMessage
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
-			// Not a stream-json line — codebuddy may print a YOLO warning or
-			// other banner to stdout before the first event. Silently
-			// skip; the stderr tail captures diagnostics for failures.
+			// Not a stream-json line — codebuddy may print a permission-bypass
+			// warning or other banner to stdout before the first event.
+			// Silently skip; the stderr tail captures diagnostics for failures.
 			continue
 		}
 
@@ -641,36 +660,45 @@ func codebuddyUsageHasTokens(input, output, cacheRead, cacheWrite int64) bool {
 // ── Args + I/O helpers ──
 
 // buildCodebuddyArgs assembles the CLI argument vector for
-// `codebuddy --bare` in stream-json mode. The hardcoded flags establish the
+// `codebuddy --print` in stream-json mode. The hardcoded flags establish the
 // daemon↔codebuddy protocol contract; user-supplied extra/custom args are
 // filtered against codebuddyBlockedArgs so a misconfigured agent cannot
 // silently outvote a flag the protocol depends on.
 //
-// ThinkingLevel is intentionally not mapped: codebuddy --help (v2.113.0)
+// codebuddy (v2.114.1) flag mapping (NOT qwen's flags):
+//   - non-interactive mode: --print (qwen uses --bare)
+//   - permission bypass: --dangerously-skip-permissions (qwen uses --yolo)
+//   - model: --model (qwen uses -m)
+//   - max turns: --max-turns (qwen uses --max-session-turns)
+//   - system prompt: --system-prompt (qwen uses --append-system-prompt)
+//
+// ThinkingLevel is intentionally not mapped: codebuddy --help (v2.114.1)
 // exposes no reasoning-effort flag (same as qwen). opts.ThinkingLevel is
 // silently ignored rather than failing, mirroring the qwen / openclaw
 // backend's handling of unsupported fields, so runtime support can grow
 // incrementally.
 func buildCodebuddyArgs(opts ExecOptions, logger *slog.Logger) []string {
 	args := []string{
-		"--bare",
+		"--print",
 		"--output-format", "stream-json",
 		"--input-format", "stream-json",
-		"--yolo",
+		"--dangerously-skip-permissions",
 	}
 	if opts.Model != "" {
-		args = append(args, "-m", opts.Model)
+		args = append(args, "--model", opts.Model)
 	}
 	if opts.MaxTurns > 0 {
-		args = append(args, "--max-session-turns", fmt.Sprintf("%d", opts.MaxTurns))
+		args = append(args, "--max-turns", fmt.Sprintf("%d", opts.MaxTurns))
 	}
 	if opts.SystemPrompt != "" {
-		// Use --append-system-prompt (additive) rather than --system-prompt
-		// (override) so we do not blow away codebuddy's default system
-		// prompt; daemon instructions should compose with the CLI's
-		// built-in scaffolding, not replace it. Matches the claude / qwen
-		// backend's choice.
-		args = append(args, "--append-system-prompt", opts.SystemPrompt)
+		// codebuddy supports --system-prompt (override) but NOT
+		// --append-system-prompt (unlike claude / qwen, which use the
+		// additive form to compose with the CLI's built-in scaffolding).
+		// codebuddy's only system-prompt surface is the override form, so
+		// the daemon's instructions replace codebuddy's default system
+		// prompt. codebuddy also exposes --system-prompt-file for
+		// file-based prompts, but the inline form is sufficient here.
+		args = append(args, "--system-prompt", opts.SystemPrompt)
 	}
 	if opts.ResumeSessionID != "" {
 		args = append(args, "--resume", opts.ResumeSessionID)

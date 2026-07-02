@@ -74,12 +74,28 @@ type cli struct {
 // detect.DefaultCatalog so `run` can still proceed against an
 // explicitly-named model even on a host where the version probes
 // misbehaved. This mirrors serve's behaviour so the two modes agree.
-func newCLI(configPath string) (*cli, error) {
+//
+// debug controls the logger verbosity for the local verbs. Local
+// commands are quiet by default (LevelError) so the detect INFO/WARN
+// chatter and catalog summary do not clutter user-facing output — pass
+// debug=true (from `run`/`agents`/`models --debug`) to bump to
+// LevelDebug and re-enable the catalog summary. The daemon
+// (serve/start) is unaffected: it builds its own logger from
+// cfg.LogLevel (default "info") so operators still get INFO logs in the
+// daemon log file.
+func newCLI(configPath string, debug bool) (*cli, error) {
 	cfg, err := loadConfig(configPath)
 	if err != nil {
 		return nil, err
 	}
-	logger := setupLogger(cfg.LogLevel)
+	// Local commands are quiet by default; cfg.LogLevel is intentionally
+	// ignored here so a daemon-oriented "info" config does not spam a
+	// one-shot `run` / `agents` / `models` invocation.
+	level := "error"
+	if debug {
+		level = "debug"
+	}
+	logger := setupLogger(level)
 
 	// In-memory store: run / agents / models never read back a prior
 	// run, and a one-shot invocation must not litter the cwd with a
@@ -96,7 +112,13 @@ func newCLI(configPath string) (*cli, error) {
 		logger.Warn("detect failed, using default catalog", "error", err)
 		catalog = detect.DefaultCatalog()
 	}
-	logCatalogSummary(logger, catalog)
+	// The catalog summary is debug-only diagnostics; with the default
+	// LevelError logger it would be silenced anyway, but guard it so the
+	// intent is explicit and a future level change cannot reintroduce
+	// the noise.
+	if debug {
+		logCatalogSummary(logger, catalog)
+	}
 
 	fc, err := facade.New(cfg, st, catalog, logger)
 	if err != nil {
@@ -149,13 +171,14 @@ func loadConfig(configPath string) (*config.Config, error) {
 	return cfg, nil
 }
 
-// setupLogger builds a slog.Logger writing JSON to stdout at the
+// setupLogger builds a slog.Logger writing JSON to stderr at the
 // requested level. An unknown level falls back to info so a typo never
-// silences the daemon. stdout (not stderr) is intentional: the daemon
-// pipes user-facing text through stdout in `run` mode, and the log
-// channel goes to the same stream so a single redirection captures
-// the full operational picture. The level switch is duplicated from
-// the daemon's historical setup so the two modes agree byte-for-byte.
+// silences the daemon. stderr (not stdout) is intentional: stdout is
+// reserved for user-facing output — `run` streams model text there and
+// `models` / `agents` print their listings there — so logging to stdout
+// would pollute parseable output. The daemon redirects both stdout and
+// stderr to its log file (see logFilePath), so daemon logs still land in
+// the same place; only the local verbs benefit from the clean stdout.
 func setupLogger(level string) *slog.Logger {
 	var lv slog.Level
 	switch level {
@@ -168,7 +191,7 @@ func setupLogger(level string) *slog.Logger {
 	default:
 		lv = slog.LevelInfo
 	}
-	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lv}))
+	return slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: lv}))
 }
 
 // logCatalogSummary logs one line per detected CLI and a final summary.
@@ -368,6 +391,8 @@ func runRun(args []string) int {
 	timeoutDur := fs.Duration("timeout", 0, "hard wall-clock timeout (e.g. 30s, 2m; 0 = none)")
 	resume := fs.String("resume", "", "session id to resume")
 	noStream := fs.Bool("no-stream", false, "disable live streaming; print aggregated output at the end")
+	debug := fs.Bool("debug", false, "enable debug logging (shows detect/catalog logs)")
+	fs.BoolVar(debug, "d", false, "shorthand for --debug")
 	if err := fs.Parse(flagArgs); err != nil {
 		if err == flag.ErrHelp {
 			return 0
@@ -385,7 +410,7 @@ func runRun(args []string) int {
 		return 2
 	}
 
-	c, err := newCLI(*configPath)
+	c, err := newCLI(*configPath, *debug)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "aiclibridge run: %v\n", err)
 		return 1
@@ -441,6 +466,8 @@ func runRun(args []string) int {
 func runAgents(args []string) int {
 	fs := flag.NewFlagSet("agents", flag.ContinueOnError)
 	configPath := fs.String("config", "", "path to config file (default: search order)")
+	debug := fs.Bool("debug", false, "enable debug logging (shows detect/catalog logs)")
+	fs.BoolVar(debug, "d", false, "shorthand for --debug")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
 			return 0
@@ -448,7 +475,7 @@ func runAgents(args []string) int {
 		return 2
 	}
 
-	c, err := newCLI(*configPath)
+	c, err := newCLI(*configPath, *debug)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "aiclibridge agents: %v\n", err)
 		return 1
@@ -485,6 +512,8 @@ func runAgents(args []string) int {
 func runModels(args []string) int {
 	fs := flag.NewFlagSet("models", flag.ContinueOnError)
 	configPath := fs.String("config", "", "path to config file (default: search order)")
+	debug := fs.Bool("debug", false, "enable debug logging (shows detect/catalog logs)")
+	fs.BoolVar(debug, "d", false, "shorthand for --debug")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
 			return 0
@@ -492,7 +521,7 @@ func runModels(args []string) int {
 		return 2
 	}
 
-	c, err := newCLI(*configPath)
+	c, err := newCLI(*configPath, *debug)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "aiclibridge models: %v\n", err)
 		return 1

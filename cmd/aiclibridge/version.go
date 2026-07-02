@@ -55,7 +55,18 @@ import (
 //     denied"); `read ANSWER` uses /dev/tty under `curl|sh` (stdin is
 //     the curl pipe, not a terminal, so plain `read` consumed script
 //     bytes and corrupted execution).
-const Version = "0.5.3"
+//   - v0.5.4: three usability fixes —
+//     1) Local commands (run/agents/models) are now quiet by default
+//        (LevelError); add --debug/-d to see detect logs. Logger writes
+//        to stderr (was stdout, which polluted `run` text output).
+//     2) codebuddy adapter fixed: was using qwen's flags (--bare/--yolo/
+//        -m/--max-session-turns) which codebuddy doesn't support; now
+//        uses codebuddy's actual flags (--print/--dangerously-skip-
+//        permissions/--model/--max-turns).
+//     3) codebuddy catalog expanded from 2 placeholder models to all 15
+//        real models from `codebuddy --help` (glm-5.2, minimax-m3,
+//        kimi-k2.7, deepseek-v4-pro, etc.); pricing table updated.
+const Version = "0.5.4"
 
 // Build and Commit are populated by -ldflags at link time
 // (`-X main.Build=... -X main.Commit=...`). They stay empty for local

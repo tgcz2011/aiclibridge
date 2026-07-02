@@ -56,7 +56,9 @@ func priceKey(provider, model string) string {
 // Bytedance doubao-seedream/seedance are image/video generation billed
 // per call, not per token — zero here; the stats API reports $0 for them.
 //
-// Tencent codebuddy-x1 / hunyuan-code have no public token price — zero.
+// Tencent codebuddy models (glm/minimax/kimi/deepseek/hy3 accessed via
+// codebuddy CLI) have no public per-token price — zero here. Update as
+// Tencent publishes rates.
 //
 // Newer v0.2 CLIs (github, block, cursor, moonshot, aws, qoder, nous,
 // auggie) either resell models under opaque pricing or have no public
@@ -84,9 +86,22 @@ var prices = map[string]Price{
 	priceKey("bytedance", "doubao-seedream-4-0"): {},
 	priceKey("bytedance", "doubao-seedance-1-0"): {},
 
-	// ── Tencent (no public token price) ──
-	priceKey("tencent", "codebuddy-x1"):  {},
-	priceKey("tencent", "hunyuan-code"):  {},
+	// ── Tencent / codebuddy (no public per-token price) ──
+	priceKey("tencent", "glm-5.2"):          {},
+	priceKey("tencent", "glm-5.1"):          {},
+	priceKey("tencent", "glm-5.0"):          {},
+	priceKey("tencent", "glm-5.0-turbo"):    {},
+	priceKey("tencent", "glm-5v-turbo"):     {},
+	priceKey("tencent", "glm-4.7"):          {},
+	priceKey("tencent", "minimax-m3"):       {},
+	priceKey("tencent", "minimax-m2.7"):     {},
+	priceKey("tencent", "kimi-k2.7"):        {},
+	priceKey("tencent", "kimi-k2.6"):        {},
+	priceKey("tencent", "kimi-k2.5"):        {},
+	priceKey("tencent", "hy3-preview"):      {},
+	priceKey("tencent", "deepseek-v4-pro"):  {},
+	priceKey("tencent", "deepseek-v4-flash"):{},
+	priceKey("tencent", "deepseek-v3-2-volc"): {},
 
 	// ── v0.2 CLIs (no public token price yet) ──
 	priceKey("github", "gpt-5"):            {},

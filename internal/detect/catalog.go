@@ -108,12 +108,31 @@ var hardcodedCatalog = map[string][]ProviderInfo{
 		},
 	},
 	// ── v0.2 additions ──
+	// codebuddy v2.114.1 exposes 15 models via `--model` (verified against
+	// `codebuddy --help`). All are served through Tencent's CodeBuddy
+	// product, so they share a single "tencent" provider. The previous
+	// placeholders (codebuddy-x1 / hunyuan-code) are not accepted by
+	// `--model` and have been removed; pricing.go still carries their
+	// (zero) entries harmlessly.
 	"codebuddy": {
 		{
 			Name: "tencent",
 			Models: []ModelInfo{
-				{Name: "codebuddy-x1", DisplayName: "CodeBuddy X1"},
-				{Name: "hunyuan-code", DisplayName: "Hunyuan Code"},
+				{Name: "glm-5.2", DisplayName: "GLM 5.2"},
+				{Name: "glm-5.1", DisplayName: "GLM 5.1"},
+				{Name: "glm-5.0", DisplayName: "GLM 5.0"},
+				{Name: "glm-5.0-turbo", DisplayName: "GLM 5.0 Turbo"},
+				{Name: "glm-5v-turbo", DisplayName: "GLM 5V Turbo"},
+				{Name: "glm-4.7", DisplayName: "GLM 4.7"},
+				{Name: "minimax-m3", DisplayName: "MiniMax M3"},
+				{Name: "minimax-m2.7", DisplayName: "MiniMax M2.7"},
+				{Name: "kimi-k2.7", DisplayName: "Kimi K2.7"},
+				{Name: "kimi-k2.6", DisplayName: "Kimi K2.6"},
+				{Name: "kimi-k2.5", DisplayName: "Kimi K2.5"},
+				{Name: "hy3-preview", DisplayName: "HY3 Preview"},
+				{Name: "deepseek-v4-pro", DisplayName: "DeepSeek V4 Pro"},
+				{Name: "deepseek-v4-flash", DisplayName: "DeepSeek V4 Flash"},
+				{Name: "deepseek-v3-2-volc", DisplayName: "DeepSeek V3.2 Volc"},
 			},
 		},
 	},

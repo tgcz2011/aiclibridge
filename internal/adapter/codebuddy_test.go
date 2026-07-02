@@ -31,10 +31,11 @@ func noopCloseStdinCodebuddy() {}
 // ── TestCodebuddyArgs ──
 //
 // Table-driven coverage of buildCodebuddyArgs across the flag combinations
-// the daemon can inject. Pins the hardcoded protocol flags (--bare /
-// --output-format stream-json / --input-format stream-json / --yolo) and
-// every optional surface (-m, --max-session-turns, --append-system-prompt,
-// --resume, custom_args passthrough). Mirrors TestQwenArgs.
+// the daemon can inject. Pins the hardcoded protocol flags (--print /
+// --output-format stream-json / --input-format stream-json /
+// --dangerously-skip-permissions) and every optional surface (--model,
+// --max-turns, --system-prompt, --resume, custom_args passthrough).
+// Mirrors TestQwenArgs but asserts codebuddy's flag names (NOT qwen's).
 
 func TestCodebuddyArgs(t *testing.T) {
 	t.Parallel()
@@ -50,37 +51,39 @@ func TestCodebuddyArgs(t *testing.T) {
 		notContains []string
 	}{
 		{
-			name: "bare minimum: stream-json + yolo + bare hardcoded",
+			name: "bare minimum: stream-json + dangerously-skip-permissions + print hardcoded",
 			opts: ExecOptions{},
 			contains: []string{
-				"--bare",
+				"--print",
 				"--output-format", "stream-json",
 				"--input-format", "stream-json",
-				"--yolo",
+				"--dangerously-skip-permissions",
 			},
-			notContains: []string{"-m", "--max-session-turns", "--append-system-prompt", "--resume", "--mcp-config"},
+			notContains: []string{"--model", "--max-turns", "--system-prompt", "--resume", "--mcp-config"},
 		},
 		{
-			name: "model injected via -m",
+			name: "model injected via --model",
 			opts: ExecOptions{Model: "codebuddy-pro"},
 			contains: []string{
-				"-m", "codebuddy-pro",
+				"--model", "codebuddy-pro",
 			},
+			notContains: []string{"-m"},
 		},
 		{
-			name: "max turns maps to --max-session-turns",
+			name: "max turns maps to --max-turns",
 			opts: ExecOptions{MaxTurns: 7},
 			contains: []string{
-				"--max-session-turns", "7",
+				"--max-turns", "7",
 			},
+			notContains: []string{"--max-session-turns"},
 		},
 		{
-			name: "system prompt uses --append-system-prompt (additive, not override)",
+			name: "system prompt uses --system-prompt (override, codebuddy has no --append-system-prompt)",
 			opts: ExecOptions{SystemPrompt: "be terse"},
 			contains: []string{
-				"--append-system-prompt", "be terse",
+				"--system-prompt", "be terse",
 			},
-			notContains: []string{"--system-prompt"},
+			notContains: []string{"--append-system-prompt"},
 		},
 		{
 			name: "resume maps to --resume <id>",
@@ -123,7 +126,7 @@ func TestCodebuddyArgs(t *testing.T) {
 			args := buildCodebuddyArgs(tt.opts, logger)
 
 			// Hardcoded protocol flags must always be present.
-			for _, want := range []string{"--bare", "--output-format", "stream-json", "--input-format", "stream-json", "--yolo"} {
+			for _, want := range []string{"--print", "--output-format", "stream-json", "--input-format", "stream-json", "--dangerously-skip-permissions"} {
 				if !slices.Contains(args, want) {
 					t.Errorf("args %v: missing required %q", args, want)
 				}
@@ -187,12 +190,17 @@ func TestCodebuddyResume(t *testing.T) {
 
 // ── TestCodebuddyBlockedArgs ──
 //
-// Verifies the daemon-managed flag set: protocol-critical flags
-// (--output-format, --input-format, --yolo, --bare, -m/--model, --mcp-config,
-// --session-id, --system-prompt, --append-system-prompt, --prompt/-p,
-// --approval-mode) cannot be overridden by user-configured custom_args.
-// Uses the same generic filterCustomArgs helper the other backends use;
-// this test pins the codebuddy-specific set (identical to qwen's).
+// Verifies the daemon-managed flag set: protocol-critical codebuddy flags
+// (--output-format, --input-format, --dangerously-skip-permissions/-y,
+// --print/-p, --model, --max-turns, --mcp-config, --session-id,
+// --system-prompt, --permission-mode) cannot be overridden by
+// user-configured custom_args. The qwen-only flag names (--bare, --yolo,
+// -m, --append-system-prompt, --prompt, --approval-mode,
+// --max-session-turns) are also blocked as safety nets so a misconfigured
+// agent copying qwen flags cannot smuggle an unsupported flag through to
+// codebuddy. Uses the same generic filterCustomArgs helper the other
+// backends use; this test pins the codebuddy-specific set (NOT identical
+// to qwen's).
 
 func TestCodebuddyBlockedArgs(t *testing.T) {
 	t.Parallel()
@@ -202,17 +210,24 @@ func TestCodebuddyBlockedArgs(t *testing.T) {
 	in := []string{
 		"--output-format", "text", // blocked (with value)
 		"--input-format", "text", // blocked (with value)
-		"--yolo",      // blocked (standalone)
-		"--bare",      // blocked (standalone)
-		"-m", "gpt-4", // blocked (with value)
-		"--model", "gpt-4", // blocked (with value)
+		"--dangerously-skip-permissions", // blocked (standalone, codebuddy-correct)
+		"-y",                             // blocked (standalone, codebuddy-correct)
+		"--print",                        // blocked (standalone, codebuddy-correct)
+		"-p",                             // blocked (standalone, codebuddy-correct)
+		"--model", "gpt-4",               // blocked (with value, codebuddy-correct)
+		"--max-turns", "5", // blocked (with value, codebuddy-correct)
+		"--permission-mode", "default", // blocked (with value, codebuddy-correct)
 		"--mcp-config", "/etc/mcp.json", // blocked (with value)
 		"--session-id", "hijack", // blocked (with value)
-		"--system-prompt", "evil", // blocked (with value)
-		"--append-system-prompt", "evil", // blocked (with value)
-		"--prompt", "evil", // blocked (with value)
-		"-p", "evil", // blocked (with value)
-		"--approval-mode", "default", // blocked (with value)
+		"--system-prompt", "evil", // blocked (with value, codebuddy-correct)
+		// Safety-net flags (qwen-only names, codebuddy does NOT support them):
+		"--bare",      // blocked (standalone, qwen-only safety net)
+		"--yolo",      // blocked (standalone, qwen-only safety net)
+		"-m", "gpt-4", // blocked (with value, qwen-only safety net)
+		"--append-system-prompt", "evil", // blocked (with value, qwen-only safety net)
+		"--prompt", "evil", // blocked (with value, qwen-only safety net)
+		"--approval-mode", "default", // blocked (with value, qwen-only safety net)
+		"--max-session-turns", "5", // blocked (with value, qwen-only safety net)
 		"--output-format=text", // blocked (inline value form)
 		"--keep-me", "value",   // safe — passes through
 		"--debug", // safe — passes through
@@ -553,9 +568,9 @@ func TestCodebuddyMissingExecutable(t *testing.T) {
 
 // ── TestCodebuddyParseEvents_EmptyAndMalformed ──
 //
-// Empty input, blank lines, and non-JSON lines (e.g. codebuddy's YOLO
-// warning banner that leaks to stdout) must be skipped silently — the
-// scanner must not error out and the result must default to
+// Empty input, blank lines, and non-JSON lines (e.g. codebuddy's
+// permission-bypass warning banner that leaks to stdout) must be skipped
+// silently — the scanner must not error out and the result must default to
 // status=completed. Mirrors TestQwenParseEvents_EmptyAndMalformed.
 
 func TestCodebuddyParseEvents_EmptyAndMalformed(t *testing.T) {
@@ -567,7 +582,7 @@ func TestCodebuddyParseEvents_EmptyAndMalformed(t *testing.T) {
 	// Mix of blank lines, a non-JSON banner, and no terminal result event.
 	ndjson := strings.Join([]string{
 		``,
-		`Warning: running headless with --yolo and no sandbox.`,
+		`Warning: running headless with --dangerously-skip-permissions and no sandbox.`,
 		``,
 		``,
 	}, "\n")
