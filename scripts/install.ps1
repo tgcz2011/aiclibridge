@@ -28,8 +28,11 @@ param(
 $ErrorActionPreference = "Stop"
 $Owner = "tgcz2011"
 $Repo  = "aiclibridge"
+$ReleasesLatest = "https://github.com/$Owner/$Repo/releases/latest"
 $ApiLatest = "https://api.github.com/repos/$Owner/$Repo/releases/latest"
 $DownloadBase = "https://github.com/$Owner/$Repo/releases/download"
+# Optional mirror prefix (e.g. https://ghproxy.com) for download URLs.
+$Mirror = $env:GITHUB_MIRROR
 
 function Write-Verbose-Log([string]$msg) {
     if ($Verbose) { Write-Host "install.ps1: $msg" -ForegroundColor Cyan }
@@ -52,15 +55,32 @@ switch -Regex ($arch) {
 Write-Verbose-Log "detected: goos=windows goarch=$goarch"
 
 # ── resolve version ──
+# Primary: follow the releases/latest 302 redirect. github.com/.../releases/latest
+# redirects to .../releases/tag/<tag>; we extract <tag> from the final URL.
+# This avoids api.github.com which is frequently 403'd by rate limits or
+# region-blocking. Fallback to the REST API if the redirect fails.
 if ([string]::IsNullOrEmpty($Version)) {
-    Write-Verbose-Log "fetching latest release tag from $ApiLatest ..."
+    Write-Verbose-Log "fetching latest release tag ..."
     try {
-        $resp = Invoke-RestMethod -Uri $ApiLatest -UseBasicParsing
-        $Version = $resp.tag_name
+        $resp = Invoke-WebRequest -Uri $ReleasesLatest -Method Head -UseBasicParsing `
+            -Headers @{ "User-Agent" = "aiclibridge-installer/1.0" }
+        $finalUrl = $resp.BaseResponse.ResponseUri.AbsoluteUri
+        if ($finalUrl -match '/tag/(.+)$') {
+            $Version = $matches[1]
+        }
     } catch {
-        Write-Err "could not fetch latest release tag: $_"
-        Write-Err "check network, or pass -Version v0.4.1 explicitly."
-        exit 1
+        Write-Verbose-Log "redirect method failed; trying GitHub API ..."
+    }
+    if ([string]::IsNullOrEmpty($Version)) {
+        try {
+            $apiResp = Invoke-RestMethod -Uri $ApiLatest -UseBasicParsing `
+                -Headers @{ "User-Agent" = "aiclibridge-installer/1.0" }
+            $Version = $apiResp.tag_name
+        } catch {
+            Write-Err "could not fetch latest release tag (tried redirect + API): $_"
+            Write-Err "check network, or pass -Version v0.5.0 explicitly."
+            exit 1
+        }
     }
 }
 Write-Verbose-Log "installing version: $Version"
@@ -70,6 +90,13 @@ $asset = "aiclibridge-windows-$goarch.zip"
 $assetSha256 = "$asset.sha256"
 $downloadUrl = "$DownloadBase/$Version/$asset"
 $sha256Url   = "$DownloadBase/$Version/$assetSha256"
+
+# Apply mirror prefix if GITHUB_MIRROR is set.
+if ($Mirror) {
+    $downloadUrl = "$($Mirror.TrimEnd('/'))/$downloadUrl"
+    $sha256Url   = "$($Mirror.TrimEnd('/'))/$sha256Url"
+    Write-Verbose-Log "using mirror: $Mirror"
+}
 
 # ── temp work dir ──
 $tmp = New-Item -ItemType Directory -Path ([System.IO.Path]::GetTempPath() + "aiclibridge-install-" + [System.Guid]::NewGuid().ToString("N")) -Force

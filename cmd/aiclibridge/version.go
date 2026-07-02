@@ -38,7 +38,14 @@ import (
 //     `aiclibridge update` subcommand checks GitHub for a newer release
 //     (supports --json / --quiet); daemon startup logs an async update
 //     hint when a newer release exists.
-const Version = "0.5.0"
+//   - v0.5.1: installer robustness — install.sh now resolves the latest
+//     tag via github.com/releases/latest 302 redirect (no API quota) with
+//     api.github.com fallback; all curl calls use --http1.1 to avoid the
+//     HTTP/2 framing error common behind GFW/proxies; GITHUB_MIRROR env
+//     var / --mirror flag for mirror-prefixed downloads; --retry +
+//     --connect-timeout for transient failures; install.ps1 gains UA
+//     header + redirect-based tag resolution.
+const Version = "0.5.1"
 
 // Build and Commit are populated by -ldflags at link time
 // (`-X main.Build=... -X main.Commit=...`). They stay empty for local

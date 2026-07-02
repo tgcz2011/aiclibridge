@@ -24,8 +24,26 @@ set -eu
 
 OWNER="tgcz2011"
 REPO="aiclibridge"
+GITHUB_RELEASES="https://github.com/${OWNER}/${REPO}/releases/latest"
 GITHUB_API="https://api.github.com/repos/${OWNER}/${REPO}"
 GITHUB_DOWNLOAD="https://github.com/${OWNER}/${REPO}/releases/download"
+# User-Agent: GitHub API requires a UA; some proxies/firewalls also
+# block requests without one. curl's default UA works but we set an
+# explicit one for clarity in access logs.
+INSTALLER_UA="aiclibridge-installer/1.0"
+
+# CURL_FIX: --http1.1 avoids "Error in the HTTP2 framing layer" (curl
+# bug with HTTP/2 + TLS over flaky/proxied connections, common in
+# mainland China). --retry adds resilience to transient failures.
+# --connect-timeout prevents hanging for 75s on unreachable hosts.
+CURL_FIX="--http1.1 --retry 3 --retry-delay 2 --connect-timeout 30"
+
+# GITHUB_MIRROR: optional prefix for release-download URLs. Set it if
+# github.com is blocked in your region, e.g.:
+#   GITHUB_MIRROR=https://ghproxy.com sh scripts/install.sh
+# The mirror is only used for asset downloads (not for tag resolution,
+# which goes through api.github.com as a fallback).
+MIRROR="${GITHUB_MIRROR:-}"
 
 # ── defaults ──
 INSTALL_BIN_DIR="/usr/local/bin"
@@ -40,6 +58,8 @@ while [ $# -gt 0 ]; do
             INSTALL_BIN_DIR="$2"; shift 2 ;;
         --version)
             INSTALL_VERSION="$2"; shift 2 ;;
+        --mirror)
+            MIRROR="$2"; shift 2 ;;
         --force)
             FORCE=1; shift ;;
         -v|--verbose)
@@ -52,14 +72,21 @@ Usage: install.sh [options]
 
 Options:
   --bin <dir>       Install directory (default: /usr/local/bin, fallback: \$HOME/.local/bin)
-  --version <ver>   Version to install (default: latest, e.g. v0.4.1)
+  --version <ver>   Version to install (default: latest, e.g. v0.5.0)
+  --mirror <url>    Mirror prefix for download URLs (or set \$GITHUB_MIRROR)
   --force           Overwrite an existing aiclibridge binary without prompting.
   -v, --verbose     Verbose output.
   -h, --help        Show this help and exit.
 
 Examples:
   curl -fsSL https://github.com/${OWNER}/${REPO}/raw/main/scripts/install.sh | sh
-  curl -fsSL https://github.com/${OWNER}/${REPO}/raw/main/scripts/install.sh | sh -s -- --bin \$HOME/.local/bin --version v0.4.1
+  curl -fsSL https://github.com/${OWNER}/${REPO}/raw/main/scripts/install.sh | sh -s -- --bin \$HOME/.local/bin --version v0.5.0
+  GITHUB_MIRROR=https://ghproxy.com sh scripts/install.sh   # use a mirror
+
+Tips for users behind GFW:
+  - If downloads timeout, set https_proxy or use --mirror
+  - If api.github.com is rate-limited, pass --version explicitly
+  - Alternatively: go install github.com/${OWNER}/${REPO}/cmd/aiclibridge@latest
 EOF
             exit 0 ;;
         *)
@@ -97,16 +124,34 @@ log "detected: goos=$GOOS goarch=$GOARCH"
 
 # ── resolve version ──
 if [ -z "$INSTALL_VERSION" ]; then
-    log "fetching latest release tag from $GITHUB_API/releases/latest ..."
-    # curl -fsSL returns the JSON; grep the "tag_name": "v0.4.1" line; sed
-    # extracts the value. We avoid jq because it is not installed by default
-    # on macOS or most Linux distros.
-    LATEST_TAG="$(curl -fsSL "$GITHUB_API/releases/latest" \
-        | grep -m1 '"tag_name"' \
-        | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"
+    log "fetching latest release tag ..."
+
+    # Primary: follow the releases/latest 302 redirect. The URL
+    # https://github.com/<owner>/<repo>/releases/latest redirects to
+    # .../releases/tag/<tag>. We extract <tag> from the Location
+    # header WITHOUT following the redirect (so we don't download the
+    # release page HTML). This avoids api.github.com entirely — the API
+    # endpoint is frequently 403'd by rate limits or region-blocking in
+    # mainland China, while github.com itself stays reachable.
+    LATEST_TAG="$(curl $CURL_FIX -fsSI -H "User-Agent: ${INSTALLER_UA}" \
+        "$GITHUB_RELEASES" 2>/dev/null \
+        | grep -i '^location:' \
+        | sed -E 's#.*/tag/##' \
+        | tr -d '\r\n')"
+
+    # Fallback: GitHub REST API (consumes the 60/h unauthenticated quota).
     if [ -z "$LATEST_TAG" ]; then
-        err "could not determine latest release tag from GitHub API"
-        err "check network, or pass --version v0.4.1 explicitly."
+        log "redirect method failed; trying GitHub API ..."
+        LATEST_TAG="$(curl $CURL_FIX -fsSL -H "User-Agent: ${INSTALLER_UA}" \
+            "${GITHUB_API}/releases/latest" 2>/dev/null \
+            | grep -m1 '"tag_name"' \
+            | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"
+    fi
+
+    if [ -z "$LATEST_TAG" ]; then
+        err "could not determine latest release tag (tried redirect + API)"
+        err "check network, or pass --version v0.5.0 explicitly."
+        err "example: curl -fsSL ... | sh -s -- --version v0.5.0"
         exit 1
     fi
     INSTALL_VERSION="$LATEST_TAG"
@@ -123,6 +168,14 @@ ASSET_SHA256="${ASSET}.sha256"
 DOWNLOAD_URL="${GITHUB_DOWNLOAD}/${INSTALL_VERSION}/${ASSET}"
 SHA256_URL="${GITHUB_DOWNLOAD}/${INSTALL_VERSION}/${ASSET_SHA256}"
 
+# Apply mirror prefix to download URLs if GITHUB_MIRROR is set.
+# Format: GITHUB_MIRROR=https://ghproxy.com → https://ghproxy.com/https://github.com/...
+if [ -n "$MIRROR" ]; then
+    DOWNLOAD_URL="${MIRROR%/}/${DOWNLOAD_URL}"
+    SHA256_URL="${MIRROR%/}/${SHA256_URL}"
+    log "using mirror: ${MIRROR}"
+fi
+
 # ── temp work dir ──
 TMPDIR="$(mktemp -d 2>/dev/null || mktemp -d -t aiclibridge)"
 trap 'rm -rf "$TMPDIR"' EXIT
@@ -130,16 +183,19 @@ log "temp dir: $TMPDIR"
 
 # ── download ──
 log "downloading $DOWNLOAD_URL"
-if ! curl -fsSL "$DOWNLOAD_URL" -o "$TMPDIR/$ASSET"; then
+if ! curl $CURL_FIX -fsSL "$DOWNLOAD_URL" -o "$TMPDIR/$ASSET"; then
     err "download failed: $DOWNLOAD_URL"
     err "verify the version ($INSTALL_VERSION) has a $ASSET asset on the release page."
+    err "if github.com is blocked, try a mirror: GITHUB_MIRROR=https://ghproxy.com sh scripts/install.sh"
+    err "or set https_proxy, or use: go install github.com/${OWNER}/${REPO}/cmd/aiclibridge@${INSTALL_VERSION}"
     exit 1
 fi
 
 log "downloading $SHA256_URL"
-if ! curl -fsSL "$SHA256_URL" -o "$TMPDIR/$ASSET_SHA256"; then
+if ! curl $CURL_FIX -fsSL "$SHA256_URL" -o "$TMPDIR/$ASSET_SHA256"; then
     err "sha256 file download failed: $SHA256_URL"
     err "refusing to install without integrity verification."
+    err "if github.com is blocked, try a mirror: GITHUB_MIRROR=https://ghproxy.com sh scripts/install.sh"
     exit 1
 fi
 

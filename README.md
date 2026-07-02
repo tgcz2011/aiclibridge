@@ -5,7 +5,7 @@ AICLIBridge 是一个统一 AI CLI 桥:用一个 HTTP API 同时驱动 Claude Co
 ![CI](https://github.com/tgcz2011/aiclibridge/actions/workflows/ci.yml/badge.svg)
 ![Go](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue)
-![Release](https://img.shields.io/badge/release-v0.5.0-blue)
+![Release](https://img.shields.io/badge/release-v0.5.1-blue)
 
 ## 核心特性
 
@@ -49,6 +49,8 @@ AICLIBridge 是一个统一 AI CLI 桥:用一个 HTTP API 同时驱动 Claude Co
 curl -fsSL https://github.com/tgcz2011/aiclibridge/raw/main/scripts/install.sh | sh
 ```
 
+> 注意:URL **不要加反引号**(`` ` ``),直接写裸 URL 即可。反引号在 shell 中是命令替换语法,会导致 URL 解析错误。
+
 ### 一键安装(Windows,PowerShell)
 
 ```powershell
@@ -56,6 +58,25 @@ irm https://github.com/tgcz2011/aiclibridge/raw/main/scripts/install.ps1 | iex
 ```
 
 脚本自动探测 GOOS/GOARCH(darwin/linux × amd64/arm64、windows-amd64)、下载对应 tarball/zip、`sha256` 校验、装到 `/usr/local/bin`(不可写则 fallback `~/.local/bin`,Windows 装 `$env:USERPROFILE\bin`)。可选 `--bin` / `--version` / `--force`,详见 `scripts/install.sh -h`。
+
+### 中国大陆网络问题
+
+如果 `github.com` 连接超时或 `api.github.com` 返回 403,有三种解法:
+
+```sh
+# 1. 用 GitHub 镜像前缀(脚本会把它加到下载 URL 前)
+GITHUB_MIRROR=https://ghproxy.com sh scripts/install.sh
+# 或:
+curl -fsSL https://github.com/tgcz2011/aiclibridge/raw/main/scripts/install.sh | GITHUB_MIRROR=https://ghproxy.com sh
+
+# 2. 走 https_proxy 代理(脚本里的 curl 会自动读取)
+https_proxy=http://127.0.0.1:7890 sh scripts/install.sh
+
+# 3. 跳过版本探测,直接指定版本(避免 api.github.com 调用)
+curl -fsSL https://github.com/tgcz2011/aiclibridge/raw/main/scripts/install.sh | sh -s -- --version v0.5.1
+```
+
+脚本内部用 `--http1.1` 避免 HTTP/2 framing 错误,`--retry 3` 应对网络波动,并通过 `github.com/.../releases/latest` 的 302 重定向获取最新版本号(不消耗 API 限额,`api.github.com` 仅作 fallback)。
 
 ### 从源码安装
 
