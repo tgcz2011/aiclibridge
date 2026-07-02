@@ -1,6 +1,7 @@
 package api
 
 import (
+	"crypto/subtle"
 	"net/http"
 	"runtime/debug"
 	"strings"
@@ -81,14 +82,17 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 // `Authorization: Bearer <key>` or `x-api-key: <key>`; a missing or
 // mismatched key yields a 401 JSON error. Both header forms are accepted so
 // the same daemon serves OpenAI clients (Bearer) and Anthropic clients
-// (x-api-key) without per-client configuration.
+// (x-api-key) without per-client configuration. The presented key is
+// compared with crypto/subtle.ConstantTimeCompare so a timing attacker
+// cannot learn the key byte-by-byte; the empty-key (dev mode) bypass is
+// decided by length, not by secret content.
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.cfg.APIKey == "" {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if extractAPIKey(r) != s.cfg.APIKey {
+		if subtle.ConstantTimeCompare([]byte(extractAPIKey(r)), []byte(s.cfg.APIKey)) != 1 {
 			writeError(w, http.StatusUnauthorized,
 				"invalid api key", "authentication_error", nil)
 			return

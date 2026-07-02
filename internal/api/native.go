@@ -3,6 +3,9 @@ package api
 import (
 	"errors"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/tgcz2011/aiclibridge/internal/detect"
 	facadepkg "github.com/tgcz2011/aiclibridge/internal/facade"
@@ -50,6 +53,16 @@ type nativeRunRequest struct {
 func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 	var req nativeRunRequest
 	if !decodeJSON(w, r, &req) {
+		return
+	}
+
+	// Validate cwd at the API boundary so an untrusted client can never
+	// drive the adapter subprocess into a system directory or a path that
+	// does not exist. Empty cwd means "inherit the daemon's cwd" and is
+	// allowed. This check runs BEFORE the facade is touched, so the
+	// adapter layer never sees an unvalidated cwd.
+	if err := validateCwd(req.Cwd); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", nil)
 		return
 	}
 
@@ -235,6 +248,72 @@ func (s *Server) handleAnthropicModels(w http.ResponseWriter, r *http.Request) {
 }
 
 // ── Native helpers ──
+
+// sensitiveSystemPaths is the set of directories the agent subprocess must
+// never run inside (or above). Running an agent with cwd set to one of these
+// would let it read/write system files (e.g. /etc, /root, ~/.ssh) with no
+// legitimate project reason. The user's ~/.ssh is appended at validation
+// time because it is account-relative.
+var sensitiveSystemPaths = []string{
+	"/etc", "/usr", "/bin", "/sbin", "/var", "/root",
+	"/boot", "/dev", "/sys", "/proc",
+}
+
+// errInvalidCwd is the single error returned for every cwd validation
+// failure. Reusing one message avoids leaking which check failed (a
+// relative-vs-system-path oracle is not useful to an attacker, but a
+// uniform message is simpler and matches the documented 400 shape).
+var errInvalidCwd = errors.New(
+	"invalid cwd: must be an existing absolute directory, not a system path")
+
+// validateCwd checks that cwd is safe to pass to a subprocess as its
+// working directory. An empty cwd means "inherit the daemon's cwd" and is
+// allowed. Otherwise cwd must:
+//   - be an absolute path (relative paths are rejected),
+//   - contain no ".." traversal after filepath.Clean,
+//   - exist on disk and be a directory,
+//   - not be a parent of, or equal to, any sensitive system path
+//     (sensitiveSystemPaths plus the user's ~/.ssh).
+//
+// Returns errInvalidCwd on any failure so the caller can map it to a 400.
+func validateCwd(cwd string) error {
+	if cwd == "" {
+		return nil
+	}
+	cleaned := filepath.Clean(cwd)
+	if !filepath.IsAbs(cleaned) || strings.Contains(cleaned, "..") {
+		return errInvalidCwd
+	}
+	info, err := os.Stat(cleaned)
+	if err != nil || !info.IsDir() {
+		return errInvalidCwd
+	}
+	sensitive := sensitiveSystemPaths
+	if home, herr := os.UserHomeDir(); herr == nil && home != "" {
+		sensitive = append(sensitive, filepath.Join(home, ".ssh"))
+	}
+	for _, sp := range sensitive {
+		if pathEqualOrUnder(filepath.Clean(sp), cleaned) {
+			return errInvalidCwd
+		}
+	}
+	return nil
+}
+
+// pathEqualOrUnder reports whether target is equal to base or located
+// beneath base in the filesystem tree (i.e. base is target or a parent of
+// target). base must be a cleaned absolute path. The root "/" case is
+// handled explicitly because the separator-suffix prefix check would
+// otherwise miss it ("//".HasPrefix does not match "/etc").
+func pathEqualOrUnder(target, base string) bool {
+	if target == base {
+		return true
+	}
+	if base == "/" {
+		return true
+	}
+	return strings.HasPrefix(target, base+string(filepath.Separator))
+}
 
 // maxCollectEvents caps the in-memory event slice for non-streaming
 // responses. A run that emits more events (e.g. a very long agent session)

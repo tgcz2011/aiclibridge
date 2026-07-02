@@ -13,6 +13,14 @@ AionUi/
 /aiclibridge
 dist/
 
+# Runtime artifacts
+*.pid
+*.log
+data/
+
+# Local config (contains real API keys)
+aiclibridge.yaml
+
 # Env
 .env
 

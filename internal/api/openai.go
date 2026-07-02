@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -229,7 +230,7 @@ func (s *Server) streamOpenAIChat(w http.ResponseWriter, r *http.Request, handle
 		ID: handle.ID, Object: "chat.completion.chunk", Created: now, Model: model,
 		Choices: []openaiChoice{{Index: 0, Delta: openaiDelta{Role: "assistant"}}},
 	}
-	if err := writeSSEData(w, mustJSON(lead)); err != nil {
+	if err := writeSSEJSON(w, lead); err != nil {
 		handle.Cancel()
 		return
 	}
@@ -243,7 +244,7 @@ func (s *Server) streamOpenAIChat(w http.ResponseWriter, r *http.Request, handle
 					ID: handle.ID, Object: "chat.completion.chunk", Created: now, Model: model,
 					Choices: []openaiChoice{{Index: 0, Delta: openaiDelta{}, FinishReason: ptrString("stop")}},
 				}
-				_ = writeSSEData(w, mustJSON(term))
+				_ = writeSSEJSON(w, term)
 				_ = writeSSEData(w, "[DONE]")
 				return
 			}
@@ -251,7 +252,7 @@ func (s *Server) streamOpenAIChat(w http.ResponseWriter, r *http.Request, handle
 			if chunk == nil {
 				continue
 			}
-			if err := writeSSEData(w, mustJSON(chunk)); err != nil {
+			if err := writeSSEJSON(w, chunk); err != nil {
 				handle.Cancel()
 				return
 			}
@@ -396,15 +397,42 @@ func aggregateText(events []protocol.Event) string {
 	return sb.String()
 }
 
-// mustJSON marshals v and panics on failure. Used only for in-memory shapes
-// that are guaranteed marshalable (no channels, no funcs); a panic here is
-// caught by the recover middleware and turned into a 500.
-func mustJSON(v any) string {
+// mustJSON marshals v and returns the JSON string. It returns an error
+// instead of panicking so streaming callers can close the SSE stream
+// cleanly on a serialisation failure rather than truncating it via a
+// panic that the recover middleware would turn into a 500 mid-stream.
+// In practice the inputs are in-memory shapes that are guaranteed
+// marshalable, so an error here is unexpected; callers log/abort.
+func mustJSON(v any) (string, error) {
 	b, err := json.Marshal(v)
 	if err != nil {
-		panic("api: marshal chunk: " + err.Error())
+		return "", fmt.Errorf("api: marshal chunk: %w", err)
 	}
-	return string(b)
+	return string(b), nil
+}
+
+// writeSSEJSON marshals v and writes it as a `data:` SSE frame via
+// writeSSEData. It returns the marshal or write error so streaming
+// callers can cancel the run and close the stream cleanly instead of
+// panicking mid-stream.
+func writeSSEJSON(w http.ResponseWriter, v any) error {
+	payload, err := mustJSON(v)
+	if err != nil {
+		return err
+	}
+	return writeSSEData(w, payload)
+}
+
+// writeSSENamedJSON marshals v and writes it as a typed SSE event
+// (event: + data: lines) via writeSSENamedEvent. Like writeSSEJSON it
+// returns an error rather than panicking so streaming callers can shut
+// down cleanly on a marshal failure.
+func writeSSENamedJSON(w http.ResponseWriter, eventType string, v any) error {
+	payload, err := mustJSON(v)
+	if err != nil {
+		return err
+	}
+	return writeSSENamedEvent(w, eventType, payload)
 }
 
 // ptrString returns a pointer to s, used to set *string FinishReason fields

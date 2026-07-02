@@ -1,6 +1,14 @@
 package detect
 
-import "context"
+import (
+	"context"
+	"fmt"
+	"os/exec"
+	"strings"
+	"time"
+
+	"github.com/tgcz2011/aiclibridge/internal/adapter"
+)
 
 // supportedCLIs is the set of CLIs the bridge can serve. Order matters:
 // DefaultCatalog and Discover both iterate this slice in this order so the
@@ -231,6 +239,161 @@ type hardcodedDiscoverer struct {
 
 func newHardcodedDiscoverer(cli string) Discoverer {
 	return hardcodedDiscoverer{cli: cli}
+}
+
+// ── dynamic discoverer ──
+
+// dynamicDiscoverer probes the CLI at runtime to enumerate available
+// models. It wraps the hardcoded discoverer as a fallback: if the
+// dynamic probe errors or returns zero models, the hardcoded catalog
+// is returned so the HTTP endpoint always advertises something.
+//
+// Supported dynamic paths:
+//   - opencode: `opencode models --verbose` (adapter.DiscoverOpenCodeModels)
+//   - openclaw: `openclaw agents list --json` (adapter.DiscoverOpenclawAgents)
+//   - codebuddy: `codebuddy --help` regex on --model description
+//
+// All other CLIs (claude, codex, qwen, gemini, copilot, stubs) have no
+// CLI-exposed model-listing command and fall straight through to the
+// hardcoded catalog.
+type dynamicDiscoverer struct {
+	cli  string
+	path string // resolved binary path (empty if not on PATH)
+	hard Discoverer
+}
+
+func newDynamicDiscoverer(cli, path string) Discoverer {
+	return &dynamicDiscoverer{cli: cli, path: path, hard: newHardcodedDiscoverer(cli)}
+}
+
+// DiscoverModels runs the CLI-specific model probe, falling back to the
+// hardcoded catalog on any error or empty result.
+func (d *dynamicDiscoverer) DiscoverModels(ctx context.Context) ([]ProviderInfo, error) {
+	models, err := d.probeModels(ctx)
+	if err != nil || len(models) == 0 {
+		// Dynamic probe failed or found nothing — fall back to the
+		// hardcoded catalog so the endpoint still advertises models.
+		return d.hard.DiscoverModels(ctx)
+	}
+	return groupAdapterModels(models), nil
+}
+
+// probeModels dispatches to the per-CLI discovery function. Returns
+// (nil, error) for CLIs without a dynamic path — the caller falls back
+// to the hardcoded catalog.
+func (d *dynamicDiscoverer) probeModels(ctx context.Context) ([]adapter.Model, error) {
+	switch d.cli {
+	case "opencode":
+		return adapter.DiscoverOpenCodeModels(ctx, d.path)
+	case "openclaw":
+		return adapter.DiscoverOpenclawAgents(ctx, d.path)
+	case "codebuddy":
+		return discoverCodebuddyModels(ctx, d.path)
+	default:
+		// No dynamic discovery path — caller falls back to hardcoded.
+		return nil, fmt.Errorf("no dynamic discovery for %s", d.cli)
+	}
+}
+
+// groupAdapterModels converts the adapter package's flat []Model list
+// into the detect package's []ProviderInfo grouping (models grouped by
+// their Provider field). Models with an empty Provider go under
+// "unknown". Duplicate model IDs within a provider are deduplicated
+// (first wins) so a chatty CLI output doesn't inflate the catalog.
+func groupAdapterModels(models []adapter.Model) []ProviderInfo {
+	byProvider := make(map[string][]ModelInfo)
+	var order []string // preserve first-seen provider order
+	for _, m := range models {
+		p := m.Provider
+		if p == "" {
+			p = "unknown"
+		}
+		// Strip the "provider/" prefix from the model ID if present.
+		// opencode's adapter returns IDs like "opencode/big-pickle" with
+		// Provider="opencode"; without stripping, the routing key would
+		// be "opencode/opencode/opencode/big-pickle" (triple-stacked).
+		name := m.ID
+		if p != "" && strings.HasPrefix(name, p+"/") {
+			name = strings.TrimPrefix(name, p+"/")
+		}
+		if _, ok := byProvider[p]; !ok {
+			order = append(order, p)
+		}
+		// Skip duplicate model IDs within the same provider.
+		dup := false
+		for _, ex := range byProvider[p] {
+			if ex.Name == name {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			byProvider[p] = append(byProvider[p], ModelInfo{
+				Name:        name,
+				DisplayName: m.Label,
+			})
+		}
+	}
+	out := make([]ProviderInfo, 0, len(order))
+	for _, p := range order {
+		out = append(out, ProviderInfo{Name: p, Models: byProvider[p]})
+	}
+	return out
+}
+
+// discoverCodebuddyModels runs `codebuddy --help` and regex-parses the
+// model list from the --model flag description, which looks like:
+//
+//	--model <model>  Model for the current session. Currently supported:
+//	                (glm-5.2, glm-5.1, glm-5.0, ...)
+//
+// The 15 model IDs are comma-separated inside the parentheses. This is
+// the only discovery path codebuddy exposes — it has no `models list`
+// subcommand.
+func discoverCodebuddyModels(ctx context.Context, execPath string) ([]adapter.Model, error) {
+	if execPath == "" {
+		execPath = "codebuddy"
+	}
+	if _, err := exec.LookPath(execPath); err != nil {
+		return nil, err
+	}
+	runCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(runCtx, execPath, "--help")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	return parseCodebuddyHelpModels(string(out)), nil
+}
+
+// parseCodebuddyHelpModels extracts model IDs from the --model flag
+// description in codebuddy --help output. The list is inside
+// parentheses after "Currently supported:". Returns an empty slice if
+// the pattern is not found (e.g. codebuddy changed its help format).
+func parseCodebuddyHelpModels(help string) []adapter.Model {
+	// Find the parenthesized list after "Currently supported:".
+	idx := strings.Index(help, "Currently supported:")
+	if idx < 0 {
+		return nil
+	}
+	rest := help[idx:]
+	open := strings.Index(rest, "(")
+	close := strings.Index(rest, ")")
+	if open < 0 || close < 0 || close <= open {
+		return nil
+	}
+	list := rest[open+1 : close]
+	parts := strings.Split(list, ",")
+	models := make([]adapter.Model, 0, len(parts))
+	for _, p := range parts {
+		id := strings.TrimSpace(p)
+		if id == "" {
+			continue
+		}
+		models = append(models, adapter.Model{ID: id, Provider: "tencent"})
+	}
+	return models
 }
 
 // cloneProviders returns a deep copy of providers so callers cannot mutate

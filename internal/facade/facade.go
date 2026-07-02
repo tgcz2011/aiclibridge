@@ -167,6 +167,11 @@ type RunHandle struct {
 	// and the store is finalised. Close() waits on this for every live
 	// run so the daemon does not exit mid-finalise.
 	done chan struct{}
+	// slotOnce makes concurrency-slot release idempotent across the
+	// StartRun error path and the forwardEvents defer stack, so a double
+	// release cannot drain an extra slot from the semaphore. nil when no
+	// concurrency cap is configured (releaseConcurrentSlot is a no-op then).
+	slotOnce *sync.Once
 }
 
 // RunRequest is the unified request shape for starting a run. It is the
@@ -370,12 +375,18 @@ func (f *Facade) StartRun(ctx context.Context, req RunRequest) (*RunHandle, erro
 		atomic.AddInt32(&f.activeCount, 1)
 	}
 
+	// slotOnce makes slot release idempotent: the StartRun error path and
+	// the forwardEvents defer both reference it, so a double release
+	// (e.g. an error after the forwarder has already started) cannot drain
+	// an extra slot from the semaphore.
+	slotOnce := &sync.Once{}
+
 	// 7. Execute (panic-guarded). A panicking adapter returns an error,
 	// never crashes the daemon.
 	session, err := f.safeExecute(runCtx, cliName, backend, req.Prompt, opts)
 	if err != nil {
 		cancel()
-		f.releaseConcurrentSlot()
+		slotOnce.Do(f.releaseConcurrentSlot)
 		f.finishRun(storeCtx, runID, "failed", "", err.Error(), "")
 		return nil, err
 	}
@@ -383,12 +394,13 @@ func (f *Facade) StartRun(ctx context.Context, req RunRequest) (*RunHandle, erro
 	// 8. Set up handle + forwarder.
 	eventsCh := make(chan protocol.Event, eventsChanBuffer)
 	handle := &RunHandle{
-		ID:      runID,
-		Adapter: cliName,
-		Model:   modelName,
-		Events:  eventsCh,
-		Cancel:  cancel,
-		done:    make(chan struct{}),
+		ID:       runID,
+		Adapter:  cliName,
+		Model:    modelName,
+		Events:   eventsCh,
+		Cancel:   cancel,
+		done:     make(chan struct{}),
+		slotOnce: slotOnce,
 	}
 	f.runs.Store(runID, handle)
 
@@ -622,9 +634,10 @@ func (f *Facade) deriveContext(ctx context.Context, timeoutMs int64) (context.Co
 // releaseConcurrentSlot releases a concurrency slot acquired in StartRun.
 // It is called from forwardEvents' defer stack (the normal exit path) and
 // from StartRun's error paths after acquisition. Safe to call when no cap
-// is configured (no-op) and idempotent (a second release drains a
-// different slot — callers must ensure release is called exactly once per
-// acquire).
+// is configured (no-op). Callers wrap the invocation in the per-run
+// handle.slotOnce so a double release cannot drain an extra slot — the
+// underlying release is therefore safe to call multiple times via the
+// Once, but MUST NOT be called directly outside that Once wrapper.
 func (f *Facade) releaseConcurrentSlot() {
 	if f.concurrencySem != nil {
 		<-f.concurrencySem
@@ -678,7 +691,8 @@ func (f *Facade) forwardEvents(
 	// queued request only gets a slot after this forwarder has fully
 	// exited and the store is finalised — no point waking a queued
 	// request if this goroutine still holds adapter resources.
-	defer f.releaseConcurrentSlot()
+	// handle.slotOnce makes this idempotent with the StartRun error path.
+	defer handle.slotOnce.Do(f.releaseConcurrentSlot)
 	// Cancel runs last (release context resources).
 	defer handle.Cancel()
 	// Remove from live map.

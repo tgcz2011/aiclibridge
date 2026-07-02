@@ -66,7 +66,16 @@ import (
 //     3) codebuddy catalog expanded from 2 placeholder models to all 15
 //        real models from `codebuddy --help` (glm-5.2, minimax-m3,
 //        kimi-k2.7, deepseek-v4-pro, etc.); pricing table updated.
-const Version = "0.5.4"
+//   - v0.6.0: dynamic model discovery + security/correctness hardening.
+//     Dynamic: detect package now probes CLIs at runtime for models
+//     (opencode: `opencode models --verbose`; openclaw: `openclaw agents
+//     list --json`; codebuddy: `codebuddy --help` regex). Hardcoded
+//     catalog kept as fallback. Local commands quiet by default (--debug
+//     to see logs). Security: API key constant-time compare, cwd
+//     validation, /v1/models auth-gated, .gitignore. Correctness: URL
+//     escape, sync.Once slot release, max_concurrent_runs=0 = unlimited,
+//     openclaw version check wired in, mustJSON no longer panics in SSE.
+const Version = "0.6.0"
 
 // Build and Commit are populated by -ldflags at link time
 // (`-X main.Build=... -X main.Commit=...`). They stay empty for local

@@ -42,7 +42,7 @@ func discoverWithCLIs(ctx context.Context, clis []string) ([]CLIInfo, error) {
 		wg.Add(1)
 		go func(idx int, cliName string) {
 			defer wg.Done()
-			info, err := discoverOne(ctx, cliName, newHardcodedDiscoverer(cliName))
+			info, err := discoverOne(ctx, cliName, newDynamicDiscoverer(cliName, ""))
 			if err != nil || info == nil {
 				// Defensive: discoverOne should never error in the
 				// fault-isolating path, but if it does we surface the
@@ -79,7 +79,7 @@ func DiscoverCLI(ctx context.Context, name string) (*CLIInfo, error) {
 	if !isSupportedCLI(normalized) {
 		return nil, fmt.Errorf("detect: unsupported CLI %q (supported: %s)", name, strings.Join(supportedCLIs, ", "))
 	}
-	info, err := discoverOne(ctx, normalized, newHardcodedDiscoverer(normalized))
+	info, err := discoverOne(ctx, normalized, newDynamicDiscoverer(normalized, ""))
 	if err != nil {
 		return nil, err
 	}

@@ -97,9 +97,14 @@ func (s *Server) ListenAddr() string { return s.cfg.Listen }
 
 // registerRoutes wires every endpoint onto the mux. Each route is wrapped
 // in a middleware chain: CORS (outermost) → recover → logging → auth (when
-// required) → handler. /healthz and /v1/models skip auth because OpenAI
-// clients frequently list models without credentials and the health probe
-// must always succeed.
+// required) → handler. Only /healthz skips auth unconditionally: the health
+// probe must always succeed for an external orchestrator. Every other
+// route, including /v1/models, goes through authMiddleware — which itself
+// becomes a no-op when cfg.APIKey is empty (local dev mode), so unauthenticated
+// local use still works. /v1/models previously was public so OpenAI clients
+// could list models without a key, but that exposed the full CLI catalog
+// (every CLI/provider/model the daemon can route to) to anyone who could
+// reach the port once an api_key was configured; it now requires a key.
 func (s *Server) registerRoutes() {
 	// CORS preflight. Go 1.22+'s ServeMux returns 405 for an OPTIONS
 	// request against a method-specific pattern before any handler runs,
@@ -120,9 +125,11 @@ func (s *Server) registerRoutes() {
 	s.mux.Handle("GET /v1/agents/{cli}", s.chain(s.handleListAgent, true))
 	s.mux.Handle("GET /v1/providers", s.chain(s.handleListProviders, true))
 
-	// OpenAI-compatible. /v1/models is listed without auth (OpenAI clients
-	// enumerate models unauthenticated); chat completions require auth.
-	s.mux.Handle("GET /v1/models", s.chain(s.handleListModels, false))
+	// OpenAI-compatible. /v1/models goes through auth like every other
+	// data endpoint: with an api_key configured it requires the key (the
+	// catalog is operational data, not public); in dev mode (no api_key)
+	// authMiddleware is a no-op so OpenAI clients still list unauthenticated.
+	s.mux.Handle("GET /v1/models", s.chain(s.handleListModels, true))
 	s.mux.Handle("POST /v1/chat/completions", s.chain(s.handleOpenAIChat, true))
 	s.mux.Handle("POST /v1/chat/completions/{id}/cancel", s.chain(s.handleOpenAIChatCancel, true))
 

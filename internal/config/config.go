@@ -58,7 +58,11 @@ type Config struct {
 	// MaxConcurrentRuns caps the number of runs executing adapter
 	// subprocesses at once. Excess requests queue up to QueueTimeoutMs
 	// and then fail with a clear "queue full" error. 0 means unlimited
-	// (the v0.3 behaviour); the default applied by Validate is 8.
+	// (no cap, no queueing) — the facade treats MaxConcurrentRuns <= 0 as
+	// unlimited. A negative value is the "unset" sentinel: Defaults sets
+	// -1 and Validate replaces any negative value with the default of 8,
+	// so an explicit 0 in YAML is preserved as unlimited while an omitted
+	// field falls back to 8.
 	MaxConcurrentRuns int                    `yaml:"max_concurrent_runs"`
 	// QueueTimeoutMs bounds how long a queued request waits for a
 	// concurrency slot before giving up. 0 means unlimited wait; the
@@ -253,16 +257,13 @@ func (c *Config) Validate() error {
 	if _, ok := validLogLevels[c.LogLevel]; !ok {
 		return fmt.Errorf("config: invalid log_level %q (want debug|info|warn|error)", c.LogLevel)
 	}
-	// Apply concurrency defaults: 0 means "not set" → default 8 / 60s.
-	// A negative value is rejected; an explicit 0 in YAML would mean
-	// "unlimited", but Validate cannot distinguish unset from explicit
-	// 0 for ints, so we treat 0 as unset and apply the default. Users
-	// who want unlimited can set a very large MaxConcurrentRuns.
-	if c.MaxConcurrentRuns == 0 {
-		c.MaxConcurrentRuns = 8
-	}
+	// Apply concurrency defaults. MaxConcurrentRuns: a negative value is
+	// the "unset" sentinel (Defaults sets -1, and an explicit -1 in YAML
+	// means the same) → replace with the default of 8. 0 means unlimited
+	// (no cap, no queueing); the facade treats MaxConcurrentRuns <= 0 as
+	// unlimited. A positive value caps concurrent runs.
 	if c.MaxConcurrentRuns < 0 {
-		return fmt.Errorf("config: max_concurrent_runs must be >= 0 (got %d)", c.MaxConcurrentRuns)
+		c.MaxConcurrentRuns = 8
 	}
 	if c.QueueTimeoutMs == 0 {
 		c.QueueTimeoutMs = 60000

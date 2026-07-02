@@ -35,6 +35,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -575,8 +576,8 @@ func runCancel(args []string) int {
 		return 1
 	}
 
-	url := fmt.Sprintf("http://%s/v1/runs/%s/cancel", addr, runID)
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, nil)
+	reqURL := fmt.Sprintf("http://%s/v1/runs/%s/cancel", addr, url.PathEscape(runID))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, reqURL, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "aiclibridge cancel: %v\n", err)
 		return 1
@@ -631,8 +632,8 @@ func runGet(args []string) int {
 		return 1
 	}
 
-	url := fmt.Sprintf("http://%s/v1/runs/%s", addr, runID)
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+	reqURL := fmt.Sprintf("http://%s/v1/runs/%s", addr, url.PathEscape(runID))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, reqURL, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "aiclibridge get: %v\n", err)
 		return 1

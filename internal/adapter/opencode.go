@@ -498,6 +498,15 @@ func discoverOpenCodeModels(ctx context.Context, executablePath string) ([]Model
 	return flat, nil
 }
 
+// DiscoverOpenCodeModels is the exported wrapper around
+// discoverOpenCodeModels so the detect package can call it for dynamic
+// model discovery at daemon startup. It runs `opencode models --verbose`
+// (with a plain `opencode models` fallback) and returns the parsed
+// model list grouped by provider.
+func DiscoverOpenCodeModels(ctx context.Context, executablePath string) ([]Model, error) {
+	return discoverOpenCodeModels(ctx, executablePath)
+}
+
 func parseOpenCodeModels(output string) []opencodeModel {
 	lines := strings.Split(output, "\n")
 	var models []opencodeModel

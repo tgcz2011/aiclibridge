@@ -147,7 +147,7 @@ func (s *Server) streamAnthropicMessages(w http.ResponseWriter, r *http.Request,
 			"usage":        map[string]any{"input_tokens": 0, "output_tokens": 0},
 		},
 	}
-	if err := writeSSENamedEvent(w, "message_start", mustJSON(msgStart)); err != nil {
+	if err := writeSSENamedJSON(w, "message_start", msgStart); err != nil {
 		handle.Cancel()
 		return
 	}
@@ -158,7 +158,7 @@ func (s *Server) streamAnthropicMessages(w http.ResponseWriter, r *http.Request,
 		"index":         0,
 		"content_block": map[string]any{"type": "text", "text": ""},
 	}
-	if err := writeSSENamedEvent(w, "content_block_start", mustJSON(blockStart)); err != nil {
+	if err := writeSSENamedJSON(w, "content_block_start", blockStart); err != nil {
 		handle.Cancel()
 		return
 	}
@@ -182,7 +182,7 @@ func (s *Server) streamAnthropicMessages(w http.ResponseWriter, r *http.Request,
 				"index": 0,
 				"delta": map[string]any{"type": "text_delta", "text": ev.Content},
 			}
-			if err := writeSSENamedEvent(w, "content_block_delta", mustJSON(delta)); err != nil {
+			if err := writeSSENamedJSON(w, "content_block_delta", delta); err != nil {
 				handle.Cancel()
 				return
 			}
@@ -196,25 +196,25 @@ func (s *Server) streamAnthropicMessages(w http.ResponseWriter, r *http.Request,
 	}
 
 	// content_block_stop: close the text block.
-	_ = writeSSENamedEvent(w, "content_block_stop", mustJSON(map[string]any{
+	_ = writeSSENamedJSON(w, "content_block_stop", map[string]any{
 		"type":  "content_block_stop",
 		"index":  0,
-	}))
+	})
 
 	// message_delta: carry the stop_reason. v1 always reports end_turn; a
 	// failed/cancelled run still closes the stream with end_turn because
 	// Anthropic clients treat any other value as a hard error and the
 	// native stream already carried the real status.
-	_ = writeSSENamedEvent(w, "message_delta", mustJSON(map[string]any{
+	_ = writeSSENamedJSON(w, "message_delta", map[string]any{
 		"type":  "message_delta",
 		"delta": map[string]any{"stop_reason": "end_turn", "stop_sequence": nil},
 		"usage": map[string]any{"output_tokens": 0},
-	}))
+	})
 
 	// message_stop: terminal sentinel.
-	_ = writeSSENamedEvent(w, "message_stop", mustJSON(map[string]any{
+	_ = writeSSENamedJSON(w, "message_stop", map[string]any{
 		"type": "message_stop",
-	}))
+	})
 }
 
 // ── Anthropic non-streaming ──

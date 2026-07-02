@@ -8,10 +8,11 @@
 //     same JSON-first, text-fallback, strict-identifier strategy as the source.
 //
 //   - Version gating is a soft preflight: if `--version` returns a parseable
-//     version below the minimum, the adapter fails fast with an actionable
-//     message. If `--version` itself errors, the adapter proceeds — the runtime
-//     version field is best-effort and shouldn't block runs on a working CLI
-//     that just doesn't speak --version.
+//     version below the minimum, the adapter logs a warning with an actionable
+//     upgrade hint but does NOT fail the run (the check is advisory). If
+//     `--version` itself errors, the adapter proceeds — the runtime version
+//     field is best-effort and shouldn't block runs on a working CLI that just
+//     doesn't speak --version.
 //
 // The resume path lives at sessionID := opts.ResumeSessionID (mirrors
 // multica/server/pkg/agent/openclaw.go:71): if the caller supplied
@@ -81,6 +82,14 @@ func (b *openclawBackend) Execute(ctx context.Context, prompt string, opts ExecO
 	}
 	if _, err := exec.LookPath(execPath); err != nil {
 		return nil, fmt.Errorf("openclaw executable not found at %q: %w", execPath, err)
+	}
+
+	// Advisory version gate: warn (do not hard-fail) when the installed
+	// openclaw is below minOpenclawVersion. checkOpenclawVersion is
+	// best-effort — it returns nil when --version is unsupported or
+	// unparseable, so a warning only fires for a confirmed-too-old build.
+	if err := checkOpenclawVersion(ctx, execPath); err != nil {
+		b.cfg.Logger.Warn("openclaw version check failed", "error", err)
 	}
 
 	timeout := opts.Timeout

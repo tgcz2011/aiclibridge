@@ -270,7 +270,9 @@ func TestHealthz(t *testing.T) {
 }
 
 // Test 2: with an API key configured, a missing/incorrect key yields 401
-// and a correct Bearer token passes. /v1/models stays open without auth.
+// and a correct Bearer token passes. /v1/models also requires the key when
+// an api_key is configured (the catalog is operational data); in dev mode
+// (no api_key) it stays public, which TestOpenAIModels covers.
 func TestAuth(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.APIKey = "secret"
@@ -294,10 +296,15 @@ func TestAuth(t *testing.T) {
 		t.Fatalf("x-api-key agents: got %d, want %d", rec.Code, http.StatusOK)
 	}
 
-	// /v1/models is exempt from auth (OpenAI clients list unauthenticated).
+	// /v1/models requires auth when api_key is configured: no auth → 401,
+	// correct key → 200.
 	rec = doRequest(t, s, "GET", "/v1/models", "", nil)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("models no-auth: got %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+	rec = doRequest(t, s, "GET", "/v1/models", "", authHeader("secret"))
 	if rec.Code != http.StatusOK {
-		t.Fatalf("models no-auth: got %d, want %d", rec.Code, http.StatusOK)
+		t.Fatalf("models authed: got %d, want %d", rec.Code, http.StatusOK)
 	}
 
 	// Wrong key → 401.
