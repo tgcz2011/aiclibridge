@@ -49,7 +49,13 @@ import (
 //     (was 'aiclibridge-{goos}-{goarch}') so users can tar | mv without
 //     renaming; install.sh/ps1 accept both names (backward compatible
 //     with v0.5.0/v0.5.1 archives); install target is always 'aiclibridge'.
-const Version = "0.5.2"
+//   - v0.5.3: install.sh fixes — TARGET is now computed AFTER the
+//     /usr/local/bin → ~/.local/bin fallback (v0.5.2 computed it before,
+//     so fallback still tried to write /usr/local/bin → "Permission
+//     denied"); `read ANSWER` uses /dev/tty under `curl|sh` (stdin is
+//     the curl pipe, not a terminal, so plain `read` consumed script
+//     bytes and corrupted execution).
+const Version = "0.5.3"
 
 // Build and Commit are populated by -ldflags at link time
 // (`-X main.Build=... -X main.Commit=...`). They stay empty for local

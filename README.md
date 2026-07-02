@@ -5,7 +5,7 @@ AICLIBridge 是一个统一 AI CLI 桥:用一个 HTTP API 同时驱动 Claude Co
 ![CI](https://github.com/tgcz2011/aiclibridge/actions/workflows/ci.yml/badge.svg)
 ![Go](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue)
-![Release](https://img.shields.io/badge/release-v0.5.2-blue)
+![Release](https://img.shields.io/badge/release-v0.5.3-blue)
 
 ## 核心特性
 

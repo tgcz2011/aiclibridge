@@ -246,7 +246,6 @@ fi
 # ── pick install dir (handle non-writable /usr/local/bin) ──
 # The installed command is always 'aiclibridge' regardless of the
 # source binary name (old releases shipped aiclibridge-{goos}-{goarch}).
-TARGET="${INSTALL_BIN_DIR%/}/aiclibridge"
 
 can_write_to() {
     # True if dir exists and is writable by the current user.
@@ -255,6 +254,8 @@ can_write_to() {
 
 if ! can_write_to "$INSTALL_BIN_DIR"; then
     # Try sudo when interactive; otherwise fall back to ~/.local/bin.
+    # NOTE: under `curl | sh` stdin is the curl pipe (not a tty), so
+    # [ -t 0 ] is false and we take the fallback path — no sudo prompt.
     if [ -t 0 ] && [ -t 2 ] && command -v sudo >/dev/null 2>&1; then
         log "$INSTALL_BIN_DIR not writable; retrying with sudo"
         SUDO="sudo"
@@ -273,11 +274,17 @@ else
     SUDO=""
 fi
 
+# Compute TARGET AFTER the fallback may have changed INSTALL_BIN_DIR.
+TARGET="${INSTALL_BIN_DIR%/}/aiclibridge"
+
 # ── refuse overwrite unless --force ──
 if [ -e "$TARGET" ] && [ "$FORCE" -ne 1 ]; then
     if [ -t 0 ] && [ -t 2 ]; then
         printf 'aiclibridge: %s already exists. Overwrite? [y/N] ' "$TARGET" >&2
-        read ANSWER
+        # Read from /dev/tty, NOT stdin: under `curl | sh` stdin is the
+        # curl pipe, so `read` would consume script bytes and corrupt
+        # execution. /dev/tty forces the real terminal.
+        read ANSWER </dev/tty 2>/dev/null || ANSWER=""
         case "$ANSWER" in
             y|Y|yes|YES) ;;
             *)
