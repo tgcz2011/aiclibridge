@@ -230,14 +230,23 @@ log "checksum OK: $ACTUAL"
 # ── extract ──
 log "extracting $ASSET"
 tar -xzf "$TMPDIR/$ASSET" -C "$TMPDIR"
+# Binary name inside the tarball. v0.5.2+ ships a plain 'aiclibridge';
+# older releases (v0.5.0/v0.5.1) shipped 'aiclibridge-{goos}-{goarch}'.
+# Try canonical first, fall back to the platform-suffixed name.
 BIN_NAME="aiclibridge"
 if [ ! -f "$TMPDIR/$BIN_NAME" ]; then
-    err "extracted archive did not contain a '$BIN_NAME' binary"
-    exit 1
+    BIN_NAME="aiclibridge-${GOOS}-${GOARCH}"
+    if [ ! -f "$TMPDIR/$BIN_NAME" ]; then
+        err "extracted archive did not contain an aiclibridge binary"
+        err "expected 'aiclibridge' or 'aiclibridge-${GOOS}-${GOARCH}' in $ASSET"
+        exit 1
+    fi
 fi
 
 # ── pick install dir (handle non-writable /usr/local/bin) ──
-TARGET="${INSTALL_BIN_DIR%/}/${BIN_NAME}"
+# The installed command is always 'aiclibridge' regardless of the
+# source binary name (old releases shipped aiclibridge-{goos}-{goarch}).
+TARGET="${INSTALL_BIN_DIR%/}/aiclibridge"
 
 can_write_to() {
     # True if dir exists and is writable by the current user.
@@ -263,7 +272,6 @@ if ! can_write_to "$INSTALL_BIN_DIR"; then
 else
     SUDO=""
 fi
-TARGET="${INSTALL_BIN_DIR%/}/${BIN_NAME}"
 
 # ── refuse overwrite unless --force ──
 if [ -e "$TARGET" ] && [ "$FORCE" -ne 1 ]; then

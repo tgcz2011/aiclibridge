@@ -45,7 +45,11 @@ import (
 //     var / --mirror flag for mirror-prefixed downloads; --retry +
 //     --connect-timeout for transient failures; install.ps1 gains UA
 //     header + redirect-based tag resolution.
-const Version = "0.5.1"
+//   - v0.5.2: release archives now contain a plain 'aiclibridge' binary
+//     (was 'aiclibridge-{goos}-{goarch}') so users can tar | mv without
+//     renaming; install.sh/ps1 accept both names (backward compatible
+//     with v0.5.0/v0.5.1 archives); install target is always 'aiclibridge'.
+const Version = "0.5.2"
 
 // Build and Commit are populated by -ldflags at link time
 // (`-X main.Build=... -X main.Commit=...`). They stay empty for local

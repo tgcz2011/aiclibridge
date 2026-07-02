@@ -143,13 +143,14 @@ try {
     # ── extract ──
     Write-Verbose-Log "extracting $asset"
     Expand-Archive -Path "$($tmp.FullName)\$asset" -DestinationPath $tmp.FullName -Force
-    $binName = "aiclibridge-windows-$goarch.exe"
-    $extractedBin = Join-Path $tmp.FullName $binName
+    # v0.5.2+ ships 'aiclibridge.exe'; older releases shipped
+    # 'aiclibridge-windows-{goarch}.exe'. Try canonical first.
+    $extractedBin = Join-Path $tmp.FullName "aiclibridge.exe"
     if (-not (Test-Path $extractedBin)) {
-        # Some releases may put a generic 'aiclibridge.exe' in the zip.
-        $extractedBin = Join-Path $tmp.FullName "aiclibridge.exe"
+        $extractedBin = Join-Path $tmp.FullName "aiclibridge-windows-$goarch.exe"
         if (-not (Test-Path $extractedBin)) {
             Write-Err "extracted archive did not contain an aiclibridge binary"
+            Write-Err "expected 'aiclibridge.exe' or 'aiclibridge-windows-$goarch.exe' in $asset"
             exit 1
         }
     }

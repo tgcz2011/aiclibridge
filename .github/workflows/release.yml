@@ -54,9 +54,12 @@ jobs:
           CGO_ENABLED: "0"
         run: |
           set -e
-          bin="aiclibridge-${{ matrix.goos }}-${{ matrix.goarch }}"
-          # Windows expects an .exe extension on the binary inside the
-          # archive so users can invoke it directly after unzipping.
+          # Binary inside the archive is always named 'aiclibridge'
+          # (+'.exe' on Windows) so users can tar/zip, mv to PATH, and
+          # run 'aiclibridge version' without renaming. The archive
+          # filename keeps the platform suffix for clarity on the
+          # release page.
+          bin="aiclibridge"
           if [ "${{ matrix.goos }}" = "windows" ]; then
             bin="${bin}.exe"
           fi
@@ -141,7 +144,7 @@ jobs:
             # Windows (x86_64, PowerShell)
             Invoke-WebRequest -Uri "https://github.com/tgcz2011/aiclibridge/releases/download/${{ github.ref_name }}/aiclibridge-windows-amd64.zip" -OutFile "aiclibridge.zip"
             Expand-Archive -Path "aiclibridge.zip" -DestinationPath "."
-            .\aiclibridge-windows-amd64.exe version
+            .\aiclibridge.exe version
             # 或移到 PATH 上的目录后直接 aiclibridge version
             ```
 
